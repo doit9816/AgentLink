@@ -1,4 +1,4 @@
-﻿use crate::core::{Message, MessageHandler, Platform, ReplyContext};
+use crate::core::{Message, MessageHandler, Platform, ReplyContext};
 use aes::cipher::{block_padding::Pkcs7, BlockDecryptMut, KeyIvInit};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
@@ -11,6 +11,7 @@ use axum::{Json, Router};
 use base64::Engine;
 use futures_util::{SinkExt, StreamExt};
 use hmac::{Hmac, Mac};
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha1::{Digest as Sha1Digest, Sha1};
@@ -624,6 +625,9 @@ pub struct PollPlatformConfig {
     pub webhook_listen: String,
     pub webhook_path: String,
     pub webhook_secret: Option<String>,
+    pub route_tag: Option<String>,
+    pub account_id: Option<String>,
+    pub allow_from: Option<String>,
     pub share_session_in_channel: bool,
     pub dry_run: bool,
 }
@@ -643,6 +647,9 @@ impl Default for PollPlatformConfig {
             webhook_listen: "127.0.0.1:18600".to_string(),
             webhook_path: "/max/webhook".to_string(),
             webhook_secret: None,
+            route_tag: None,
+            account_id: None,
+            allow_from: None,
             share_session_in_channel: false,
             dry_run: false,
         }
@@ -943,12 +950,11 @@ impl Platform for WeixinPlatform {
         let ctx: SimpleReplyContext = serde_json::from_str(&reply_ctx.value)?;
         emit_outbound(self, &ctx, &content).await;
         if !self.config.dry_run {
-            self.client
-                .post(format!(
-                    "{}/ilink/bot/sendmessage",
-                    self.config.api_base.trim_end_matches('/')
-                ))
-                .bearer_auth(&self.config.token)
+            let request = self.client.post(format!(
+                "{}/ilink/bot/sendmessage",
+                self.config.api_base.trim_end_matches('/')
+            ));
+            weixin_business_request(request, &self.config)
                 .json(&json!({
                     "msg": {
                         "to_user_id": ctx.target,
@@ -986,9 +992,23 @@ async fn run_weixin_polling(platform: Arc<WeixinPlatform>, mut shutdown_rx: ones
                 match result {
                     Ok((updates, next)) => {
                         if let Some(next) = next { buf = next; }
+                        tracing::debug!(
+                            platform = %platform.config.name,
+                            updates = updates.len(),
+                            cursor_len = buf.len(),
+                            "weixin poll response received"
+                        );
                         for item in updates {
-                            if let Ok(Some(message)) = weixin_message_from_item(&platform, &item) {
-                                dispatch_webhook(Arc::clone(&platform) as Arc<dyn Platform>, &platform.handler, message).await;
+                            match weixin_message_from_item(&platform, &item) {
+                                Ok(Some(message)) => {
+                                    dispatch_webhook(Arc::clone(&platform) as Arc<dyn Platform>, &platform.handler, message).await;
+                                }
+                                Ok(None) => {
+                                    tracing::debug!(platform = %platform.config.name, item = %truncate_json(&item, 240), "weixin update ignored");
+                                }
+                                Err(err) => {
+                                    tracing::warn!(platform = %platform.config.name, error = %err, item = %truncate_json(&item, 240), "weixin update parse failed");
+                                }
                             }
                         }
                     }
@@ -1006,13 +1026,11 @@ async fn fetch_weixin_updates(
     platform: &WeixinPlatform,
     buf: &str,
 ) -> Result<(Vec<Value>, Option<String>)> {
-    let value: Value = platform
-        .client
-        .post(format!(
-            "{}/ilink/bot/getupdates",
-            platform.config.api_base.trim_end_matches('/')
-        ))
-        .bearer_auth(&platform.config.token)
+    let request = platform.client.post(format!(
+        "{}/ilink/bot/getupdates",
+        platform.config.api_base.trim_end_matches('/')
+    ));
+    let value: Value = weixin_business_request(request, &platform.config)
         .json(&json!({
             "get_updates_buf": buf,
             "base_info": { "channel_version": "agentlink-weixin/1.0" }
@@ -1022,14 +1040,32 @@ async fn fetch_weixin_updates(
         .error_for_status()?
         .json()
         .await?;
+    let ret = value.get("ret").and_then(Value::as_i64);
+    let errcode = value.get("errcode").and_then(Value::as_i64);
+    if matches!(ret, Some(code) if code != 0) || matches!(errcode, Some(code) if code != 0) {
+        return Err(anyhow!(
+            "weixin getupdates error response: {}",
+            truncate_json(&value, 500)
+        ));
+    }
+    if ret == Some(0) {
+        tracing::trace!(response = %truncate_json(&value, 500), "weixin getupdates ok");
+    }
+    let data = value.get("data").unwrap_or(&Value::Null);
     Ok((
         value
             .get("msgs")
+            .or_else(|| value.get("messages"))
+            .or_else(|| value.get("updates"))
+            .or_else(|| data.get("msgs"))
+            .or_else(|| data.get("messages"))
+            .or_else(|| data.get("updates"))
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default(),
         value
             .get("get_updates_buf")
+            .or_else(|| data.get("get_updates_buf"))
             .and_then(Value::as_str)
             .map(str::to_string),
     ))
@@ -1041,21 +1077,45 @@ fn weixin_message_from_item(platform: &WeixinPlatform, item: &Value) -> Result<O
     }
     let from = item
         .get("from_user_id")
+        .or_else(|| item.get("from_user"))
+        .or_else(|| item.get("user_id"))
+        .or_else(|| item.pointer("/sender/user_id"))
         .and_then(Value::as_str)
         .unwrap_or("unknown")
         .to_string();
+    if !weixin_sender_allowed(platform.config.allow_from.as_deref(), &from) {
+        tracing::warn!(
+            platform = %platform.config.name,
+            user_id = %from,
+            "weixin message rejected by allow_from"
+        );
+        return Ok(None);
+    }
     let text = item
         .get("item_list")
         .and_then(Value::as_array)
         .and_then(|items| {
             items.iter().find_map(|v| {
                 v.pointer("/text_item/text")
+                    .or_else(|| v.pointer("/text/text"))
                     .and_then(Value::as_str)
                     .map(str::to_string)
             })
         })
+        .or_else(|| item.get("text").and_then(Value::as_str).map(str::to_string))
+        .or_else(|| {
+            item.get("content")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .or_else(|| {
+            item.pointer("/message/text")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
         .unwrap_or_default();
     if text.trim().is_empty() {
+        tracing::debug!(platform = %platform.config.name, item = %truncate_json(item, 240), "weixin message has no text content");
         return Ok(None);
     }
     let msg_id = item.get("message_id").map(value_to_string);
@@ -1075,6 +1135,48 @@ fn weixin_message_from_item(platform: &WeixinPlatform, item: &Value) -> Result<O
             }),
         },
     )
+}
+
+fn weixin_business_request(
+    request: reqwest::RequestBuilder,
+    config: &PollPlatformConfig,
+) -> reqwest::RequestBuilder {
+    let uin = base64::engine::general_purpose::STANDARD
+        .encode(rand::thread_rng().gen::<u32>().to_string());
+    let mut request = request
+        .bearer_auth(&config.token)
+        .header("AuthorizationType", "ilink_bot_token")
+        .header("X-WECHAT-UIN", uin);
+    if let Some(route_tag) = config
+        .route_tag
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        request = request.header("SKRouteTag", route_tag);
+    }
+    request
+}
+
+fn weixin_sender_allowed(allow_from: Option<&str>, from: &str) -> bool {
+    let Some(allow_from) = allow_from.map(str::trim).filter(|value| !value.is_empty()) else {
+        return true;
+    };
+    allow_from == "*"
+        || allow_from
+            .split(',')
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .any(|value| value == from)
+}
+
+fn truncate_json(value: &Value, limit: usize) -> String {
+    let text = value.to_string();
+    if text.chars().count() <= limit {
+        text
+    } else {
+        format!("{}...", text.chars().take(limit).collect::<String>())
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1691,6 +1793,9 @@ impl TryFrom<toml::value::Table> for PollPlatformConfig {
             webhook_path: string_option(&opts, "webhook_path")
                 .unwrap_or_else(|| "/max/webhook".to_string()),
             webhook_secret: string_option(&opts, "webhook_secret"),
+            route_tag: string_option(&opts, "route_tag"),
+            account_id: string_option(&opts, "account_id"),
+            allow_from: string_option(&opts, "allow_from"),
             share_session_in_channel: bool_option(&opts, "share_session_in_channel")
                 .unwrap_or(false),
             dry_run: bool_option(&opts, "dry_run").unwrap_or(false),

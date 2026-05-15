@@ -9,6 +9,7 @@ use agentlink::more_channels::{
 use agentlink::{Engine, SessionStore};
 use axum::extract::ws::{Message as AxumWsMessage, WebSocketUpgrade};
 use axum::extract::Query;
+use axum::http::HeaderMap;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -243,9 +244,22 @@ async fn weixin_long_poll_text_round_trip_e2e() {
         "/ilink/bot/getupdates",
         post({
             let served = Arc::clone(&served);
-            move || {
+            move |headers: HeaderMap| {
                 let served = Arc::clone(&served);
                 async move {
+                    assert_eq!(
+                        headers
+                            .get("authorizationtype")
+                            .and_then(|value| value.to_str().ok()),
+                        Some("ilink_bot_token")
+                    );
+                    assert!(headers.get("x-wechat-uin").is_some());
+                    assert_eq!(
+                        headers
+                            .get("skroutetag")
+                            .and_then(|value| value.to_str().ok()),
+                        Some("test-route")
+                    );
                     if served.swap(true, Ordering::SeqCst) {
                         Json(json!({ "ret": 0, "msgs": [], "get_updates_buf": "2" }))
                     } else {
@@ -282,6 +296,10 @@ async fn weixin_long_poll_text_round_trip_e2e() {
     opts.insert(
         "api_base".to_string(),
         toml::Value::String(format!("http://{addr}")),
+    );
+    opts.insert(
+        "route_tag".to_string(),
+        toml::Value::String("test-route".to_string()),
     );
     opts.insert("dry_run".to_string(), toml::Value::Boolean(true));
     let platform = WeixinPlatform::new(weixin_config_from_options(opts).unwrap());

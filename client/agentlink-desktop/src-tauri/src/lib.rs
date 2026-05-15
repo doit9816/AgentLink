@@ -992,10 +992,15 @@ async fn send_weixin_direct_message(
     });
     let url = format!("{}/ilink/bot/sendmessage", api_base.trim_end_matches('/'));
     let client = reqwest::Client::new();
-    let response = client
+    let mut builder = client
         .post(&url)
         .bearer_auth(token)
         .header("AuthorizationType", "ilink_bot_token")
+        .header("X-WECHAT-UIN", weixin_uin_header());
+    if let Some(route_tag) = field(fields, "route_tag") {
+        builder = builder.header("SKRouteTag", route_tag);
+    }
+    let response = builder
         .json(&body)
         .send()
         .await
@@ -1070,6 +1075,12 @@ fn required_target_receive_id(target: &ChannelTargetRequest) -> Result<String, S
     opt_target(&target.receive_id)
         .or_else(|| opt_target(&target.webhook_url))
         .ok_or_else(|| "请先在测试目标里填写接收 ID。".to_string())
+}
+
+fn weixin_uin_header() -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD
+        .encode(rand::random::<u32>().to_string())
 }
 
 fn config_data_dir(options: &ClientOptions) -> PathBuf {
