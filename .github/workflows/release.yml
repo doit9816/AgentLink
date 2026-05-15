@@ -16,6 +16,9 @@ on:
     branches:
       - main
 
+permissions:
+  contents: write
+
 jobs:
   windows:
     name: Windows package
@@ -39,6 +42,10 @@ jobs:
         shell: pwsh
         run: |
           $version = "${{ github.event.inputs.version }}"
+          $refName = "${{ github.ref_name }}"
+          if ($refName -match '^v(.+)$') {
+            $version = $Matches[1]
+          }
           if ([string]::IsNullOrWhiteSpace($version)) {
             $version = "0.1.0"
           }
@@ -57,10 +64,33 @@ jobs:
             target/agentlink-desktop/release/bundle/**
           if-no-files-found: error
 
-      - name: Publish GitHub release
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
+      - name: Publish latest prerelease
+        if: github.ref == 'refs/heads/main'
+        uses: ncipollo/release-action@v1
         with:
-          files: |
-            dist/*.zip
-            target/agentlink-desktop/release/bundle/**/*
+          tag: latest
+          name: AgentLink Latest Build
+          body: |
+            自动构建产物，对应 main 分支最新提交。
+
+            正式版本请使用 v* tag 对应的 Release。
+          prerelease: true
+          allowUpdates: true
+          removeArtifacts: true
+          replacesArtifacts: true
+          makeLatest: false
+          artifacts: "dist/*.zip,target/agentlink-desktop/release/bundle/msi/*.msi,target/agentlink-desktop/release/bundle/nsis/*.exe"
+
+      - name: Publish version release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: ncipollo/release-action@v1
+        with:
+          tag: ${{ github.ref_name }}
+          name: AgentLink ${{ github.ref_name }}
+          body: |
+            AgentLink 自动打包正式版本。
+          prerelease: false
+          allowUpdates: true
+          replacesArtifacts: true
+          artifactErrorsFailBuild: true
+          artifacts: "dist/*.zip,target/agentlink-desktop/release/bundle/msi/*.msi,target/agentlink-desktop/release/bundle/nsis/*.exe"

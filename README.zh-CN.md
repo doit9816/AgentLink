@@ -95,7 +95,17 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\auto-package.ps1
 - `-CoreTargetDir H:\agentlink-core-target`：指定核心程序构建目录。
 - `-DesktopTargetDir H:\agentlink-desktop-target`：指定桌面端构建目录。
 
-推送到 GitHub 后，`.github/workflows/release.yml` 会在 `main`、PR、`v*` tag 或手动触发时自动构建 Windows 产物。打 `v0.1.0` 这类 tag 时会额外发布 GitHub Release，并上传 zip、MSI、NSIS 安装包。
+推送到 GitHub 后，`.github/workflows/release.yml` 会在 `main`、PR、`v*` tag 或手动触发时自动构建 Windows 产物。
+
+- 推到 `main`：自动更新 GitHub Release 里的 `latest` 预发布版本，并上传 zip、MSI、NSIS 安装包。
+- 推 `v0.1.0` 这类 tag：自动发布对应正式 Release，并上传 zip、MSI、NSIS 安装包。
+
+发布正式版本示例：
+
+```powershell
+git tag v0.1.0
+git push origin v0.1.0
+```
 
 ## 多 Agent 接入
 
