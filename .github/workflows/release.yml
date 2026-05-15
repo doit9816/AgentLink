@@ -71,9 +71,9 @@ jobs:
           tag: latest
           name: AgentLink Latest Build
           body: |
-            自动构建产物，对应 main 分支最新提交。
+            Automated build artifacts for the latest main branch commit.
 
-            正式版本请使用 v* tag 对应的 Release。
+            Use v* releases for stable versions.
           prerelease: true
           allowUpdates: true
           removeArtifacts: true
@@ -88,7 +88,7 @@ jobs:
           tag: ${{ github.ref_name }}
           name: AgentLink ${{ github.ref_name }}
           body: |
-            AgentLink 自动打包正式版本。
+            AgentLink automated stable build.
           prerelease: false
           allowUpdates: true
           replacesArtifacts: true
