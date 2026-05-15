@@ -1,0 +1,21 @@
+data_dir = "./data"
+
+[[projects]]
+name = "codex-demo"
+
+[projects.agent]
+type = "codex"
+
+[projects.agent.options]
+work_dir = "D:/go/src/cmsCloud"
+backend = "exec"
+mode = "suggest"
+codex_bin = "codex"
+# 可选：reasoning_effort = "medium"
+# 如需使用旧的 Codex app-server stdio 后端，改为 backend = "app-server"
+
+[[projects.platforms]]
+type = "mock"
+
+[projects.platforms.options]
+name = "mock"

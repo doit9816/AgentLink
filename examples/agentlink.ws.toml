@@ -1,0 +1,22 @@
+data_dir = "./data"
+
+[[projects]]
+name = "demo"
+
+[projects.agent]
+type = "codex"
+
+[projects.agent.options]
+work_dir = "D:/go/src/cmsCloud"
+mode = "suggest"
+codex_bin = "codex"
+
+[[projects.platforms]]
+type = "bridge"
+
+[projects.platforms.options]
+name = "bridge"
+listen = "127.0.0.1:9810"
+path = "/bridge/ws"
+token = "change-me"
+# insecure = true

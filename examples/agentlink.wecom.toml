@@ -1,0 +1,27 @@
+data_dir = "./data"
+
+[[projects]]
+name = "demo"
+
+[projects.agent]
+type = "codex"
+
+[projects.agent.options]
+work_dir = "D:/go/src/cmsCloud"
+mode = "suggest"
+codex_bin = "codex"
+
+[[projects.platforms]]
+type = "wecom"
+
+[projects.platforms.options]
+name = "wecom"
+listen = "127.0.0.1:18500"
+callback_path = "/wecom/callback"
+corp_id = "your-corp-id"
+corp_secret = "your-corp-secret"
+agent_id = "1000002"
+# 企业微信回调模式里配置的 Token / EncodingAESKey；不配置 callback_aes_key 时只处理明文回调。
+callback_token = "your-callback-token"
+callback_aes_key = "your-43-char-encoding-aes-key"
+share_session_in_channel = false

@@ -1,0 +1,13 @@
+data_dir = "./data"
+
+[[projects]]
+name = "mock-demo"
+
+[projects.agent]
+type = "mock"
+
+[[projects.platforms]]
+type = "mock"
+
+[projects.platforms.options]
+name = "mock"

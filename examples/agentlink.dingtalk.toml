@@ -1,0 +1,24 @@
+data_dir = "./data"
+
+[[projects]]
+name = "demo"
+
+[projects.agent]
+type = "codex"
+
+[projects.agent.options]
+work_dir = "D:/go/src/cmsCloud"
+mode = "suggest"
+codex_bin = "codex"
+
+[[projects.platforms]]
+type = "dingtalk"
+
+[projects.platforms.options]
+name = "dingtalk"
+listen = "127.0.0.1:18300"
+callback_path = "/dingtalk/webhook"
+client_id = "dingxxx"
+client_secret = "xxx"
+robot_code = "dingxxx"
+share_session_in_channel = false

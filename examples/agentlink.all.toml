@@ -1,0 +1,178 @@
+﻿data_dir = "./data"
+
+[[projects]]
+name = "demo"
+# 首次接入优先使用扫码/交互式初始化：
+#   agentlink setup --platform feishu --config examples/agentlink.all.toml --project demo
+#   agentlink setup --platform qq --config examples/agentlink.all.toml --project demo
+# 不支持扫码的平台保留手填 token/app secret。
+default_platforms = ["mock"]
+
+[projects.agent]
+type = "codex"
+
+[projects.agent.options]
+work_dir = "D:/go/src/cmsCloud"
+backend = "exec"
+mode = "suggest"
+codex_bin = "codex"
+# 如需使用 Codex app-server stdio 后端，改为 backend = "app-server"
+
+[[projects.platforms]]
+id = "mock"
+type = "mock"
+
+[projects.platforms.options]
+name = "mock"
+
+[[projects.platforms]]
+id = "http"
+type = "http"
+
+[projects.platforms.options]
+name = "http"
+listen = "127.0.0.1:18080"
+path = "/webhook"
+outbound_url = "http://127.0.0.1:18081/reply"
+bearer_token = "change-me"
+
+[[projects.platforms]]
+id = "bridge"
+type = "bridge"
+
+[projects.platforms.options]
+name = "bridge"
+listen = "127.0.0.1:18090"
+path = "/bridge"
+token = "change-me"
+
+[[projects.platforms]]
+id = "feishu"
+type = "feishu"
+
+[projects.platforms.options]
+name = "feishu"
+connection_mode = "websocket"
+listen = "127.0.0.1:18110"
+callback_path = "/feishu/webhook"
+app_id = "cli_xxx"
+app_secret = "sec_xxx"
+encrypt_key = ""
+verification_token = ""
+
+[[projects.platforms]]
+id = "dingtalk"
+type = "dingtalk"
+
+[projects.platforms.options]
+name = "dingtalk"
+listen = "127.0.0.1:18200"
+callback_path = "/dingtalk/webhook"
+client_id = "your-client-id"
+client_secret = "your-client-secret"
+robot_code = "your-robot-code"
+
+[[projects.platforms]]
+id = "telegram"
+type = "telegram"
+
+[projects.platforms.options]
+name = "telegram"
+token = "123456:your-telegram-token"
+
+[[projects.platforms]]
+id = "slack"
+type = "slack"
+
+[projects.platforms.options]
+name = "slack"
+app_token = "xapp-your-app-token"
+bot_token = "xoxb-your-bot-token"
+
+[[projects.platforms]]
+id = "discord"
+type = "discord"
+
+[projects.platforms.options]
+name = "discord"
+token = "your-discord-bot-token"
+
+[[projects.platforms]]
+id = "qq"
+type = "qq"
+
+[projects.platforms.options]
+name = "qq"
+ws_url = "ws://127.0.0.1:3001"
+access_token = ""
+
+[[projects.platforms]]
+id = "line"
+type = "line"
+
+[projects.platforms.options]
+name = "line"
+listen = "127.0.0.1:18400"
+callback_path = "/line/webhook"
+channel_secret = "your-line-channel-secret"
+channel_token = "your-line-channel-token"
+
+[[projects.platforms]]
+id = "wecom"
+type = "wecom"
+
+[projects.platforms.options]
+name = "wecom"
+listen = "127.0.0.1:18500"
+callback_path = "/wecom/callback"
+corp_id = "your-corp-id"
+corp_secret = "your-corp-secret"
+agent_id = "1000002"
+callback_token = "your-callback-token"
+callback_aes_key = "your-43-char-encoding-aes-key"
+
+[[projects.platforms]]
+id = "max"
+type = "max"
+
+[projects.platforms.options]
+name = "max"
+token = "your-max-bot-token"
+api_base = "https://platform-api.max.ru"
+webhook_url = ""
+webhook_listen = "127.0.0.1:18600"
+webhook_path = "/max/webhook"
+webhook_secret = ""
+
+[[projects.platforms]]
+id = "weixin"
+type = "weixin"
+
+[projects.platforms.options]
+name = "weixin"
+token = "your-openclaw-ilink-token"
+api_base = "https://ilinkai.weixin.qq.com"
+
+[[projects.platforms]]
+id = "qqbot"
+type = "qqbot"
+
+[projects.platforms.options]
+name = "qqbot"
+app_id = "your-qqbot-app-id"
+app_secret = "your-qqbot-app-secret"
+token_endpoint = "https://bots.qq.com/app/getAppAccessToken"
+api_base = "https://api.sgroup.qq.com"
+gateway_url = "wss://api.sgroup.qq.com/websocket"
+
+[[projects.platforms]]
+id = "weibo"
+type = "weibo"
+
+[projects.platforms.options]
+name = "weibo"
+app_id = "your-weibo-app-id"
+app_secret = "your-weibo-app-secret"
+token_endpoint = "https://open-im.api.weibo.com/open/auth/ws_token"
+api_base = "https://open-im.api.weibo.com"
+ws_endpoint = "ws://open-im.api.weibo.com/ws/stream"

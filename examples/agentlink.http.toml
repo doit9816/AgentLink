@@ -1,0 +1,21 @@
+data_dir = "./data"
+
+[[projects]]
+name = "demo"
+
+[projects.agent]
+type = "codex"
+
+[projects.agent.options]
+work_dir = "D:/go/src/cmsCloud"
+mode = "suggest"
+codex_bin = "codex"
+
+[[projects.platforms]]
+type = "http"
+
+[projects.platforms.options]
+name = "http"
+listen = "127.0.0.1:18080"
+# bearer_token = "change-me"
+# outbound_url = "http://127.0.0.1:19090/send"

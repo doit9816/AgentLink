@@ -1,0 +1,21 @@
+data_dir = "./data"
+
+[[projects]]
+name = "demo"
+
+[projects.agent]
+type = "codex"
+
+[projects.agent.options]
+work_dir = "D:/go/src/cmsCloud"
+mode = "suggest"
+codex_bin = "codex"
+
+[[projects.platforms]]
+type = "slack"
+
+[projects.platforms.options]
+name = "slack"
+bot_token = "xoxb-your-slack-bot-token"
+app_token = "xapp-your-slack-app-level-token"
+share_session_in_channel = false

@@ -1,0 +1,28 @@
+data_dir = "./data"
+
+[[projects]]
+name = "demo"
+
+[projects.agent]
+type = "codex"
+
+[projects.agent.options]
+work_dir = "D:/go/src/cmsCloud"
+mode = "suggest"
+codex_bin = "codex"
+
+[[projects.platforms]]
+type = "feishu"
+
+[projects.platforms.options]
+name = "feishu"
+connection_mode = "websocket"
+app_id = "cli_xxx"
+app_secret = "xxx"
+share_session_in_channel = false
+
+# Webhook fallback only. Long connection does not need public IP/domain.
+# connection_mode = "webhook"
+# listen = "127.0.0.1:18200"
+# callback_path = "/feishu/webhook"
+# verification_token = "optional"

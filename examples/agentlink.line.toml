@@ -1,0 +1,23 @@
+data_dir = "./data"
+
+[[projects]]
+name = "demo"
+
+[projects.agent]
+type = "codex"
+
+[projects.agent.options]
+work_dir = "D:/go/src/cmsCloud"
+mode = "suggest"
+codex_bin = "codex"
+
+[[projects.platforms]]
+type = "line"
+
+[projects.platforms.options]
+name = "line"
+listen = "127.0.0.1:18400"
+callback_path = "/line/webhook"
+channel_secret = "your-line-channel-secret"
+channel_token = "your-line-channel-access-token"
+share_session_in_channel = false

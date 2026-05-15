@@ -1,0 +1,21 @@
+data_dir = "./data"
+
+[[projects]]
+name = "demo"
+
+[projects.agent]
+type = "codex"
+
+[projects.agent.options]
+work_dir = "D:/go/src/cmsCloud"
+mode = "suggest"
+codex_bin = "codex"
+
+[[projects.platforms]]
+type = "telegram"
+
+[projects.platforms.options]
+name = "telegram"
+token = "123456:your-telegram-bot-token"
+poll_timeout_secs = 30
+share_session_in_channel = false

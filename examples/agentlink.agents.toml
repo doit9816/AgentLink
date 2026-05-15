@@ -1,0 +1,85 @@
+﻿data_dir = "./data"
+
+# Pick one project or copy one [projects.agent] block into agentlink.all.toml.
+
+[[projects]]
+name = "claude-demo"
+default_platforms = ["mock"]
+
+[projects.agent]
+type = "claudecode"
+
+[projects.agent.options]
+work_dir = "D:/go/src/cmsCloud"
+command = "claude"
+args = ["-p", "{prompt}"]
+timeout_mins = 30
+
+[[projects.platforms]]
+id = "mock"
+type = "mock"
+
+[projects.platforms.options]
+name = "mock"
+
+[[projects]]
+name = "gemini-demo"
+default_platforms = ["mock"]
+
+[projects.agent]
+type = "gemini"
+
+[projects.agent.options]
+work_dir = "D:/go/src/cmsCloud"
+command = "gemini"
+args = ["-p", "--output-format", "stream-json"]
+prompt_stdin = true
+timeout_mins = 30
+
+[[projects.platforms]]
+id = "mock"
+type = "mock"
+
+[projects.platforms.options]
+name = "mock"
+
+[[projects]]
+name = "opencode-demo"
+default_platforms = ["mock"]
+
+[projects.agent]
+type = "opencode"
+
+[projects.agent.options]
+work_dir = "D:/go/src/cmsCloud"
+command = "opencode"
+args = ["run", "--format", "json"]
+prompt_stdin = true
+
+[[projects.platforms]]
+id = "mock"
+type = "mock"
+
+[projects.platforms.options]
+name = "mock"
+
+[[projects]]
+name = "acp-demo"
+default_platforms = ["mock"]
+
+[projects.agent]
+type = "acp"
+
+[projects.agent.options]
+work_dir = "D:/go/src/cmsCloud"
+command = "agent"
+args = ["acp"]
+prompt_stdin = true
+display_name = "Cursor ACP"
+
+[[projects.platforms]]
+id = "mock"
+type = "mock"
+
+[projects.platforms.options]
+name = "mock"

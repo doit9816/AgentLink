@@ -1,0 +1,28 @@
+data_dir = "./data"
+
+[[projects]]
+name = "demo"
+
+[projects.agent]
+type = "codex"
+
+[projects.agent.options]
+work_dir = "D:/go/src/cmsCloud"
+mode = "suggest"
+codex_bin = "codex"
+
+[[projects.platforms]]
+type = "max"
+
+[projects.platforms.options]
+name = "max"
+token = "your-max-bot-token"
+api_base = "https://platform-api.max.ru"
+poll_timeout_secs = 30
+share_session_in_channel = false
+
+# Optional webhook mode. If set, bridge registers this URL at MAX and does not long-poll.
+# webhook_url = "https://your.domain/max/webhook"
+# webhook_listen = "127.0.0.1:18600"
+# webhook_path = "/max/webhook"
+# webhook_secret = "change-me"

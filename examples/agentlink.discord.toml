@@ -1,0 +1,20 @@
+data_dir = "./data"
+
+[[projects]]
+name = "demo"
+
+[projects.agent]
+type = "codex"
+
+[projects.agent.options]
+work_dir = "D:/go/src/cmsCloud"
+mode = "suggest"
+codex_bin = "codex"
+
+[[projects.platforms]]
+type = "discord"
+
+[projects.platforms.options]
+name = "discord"
+token = "your-discord-bot-token"
+share_session_in_channel = false

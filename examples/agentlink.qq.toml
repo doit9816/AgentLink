@@ -1,0 +1,21 @@
+data_dir = "./data"
+
+[[projects]]
+name = "demo"
+
+[projects.agent]
+type = "codex"
+
+[projects.agent.options]
+work_dir = "D:/go/src/cmsCloud"
+mode = "suggest"
+codex_bin = "codex"
+
+[[projects.platforms]]
+type = "qq"
+
+[projects.platforms.options]
+name = "qq"
+ws_url = "ws://127.0.0.1:3001"
+# token = "optional-onebot-access-token"
+share_session_in_channel = false

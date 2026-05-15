@@ -1,0 +1,24 @@
+data_dir = "./data"
+
+[[projects]]
+name = "demo"
+
+[projects.agent]
+type = "codex"
+
+[projects.agent.options]
+work_dir = "D:/go/src/cmsCloud"
+mode = "suggest"
+codex_bin = "codex"
+
+[[projects.platforms]]
+type = "qqbot"
+
+[projects.platforms.options]
+name = "qqbot"
+app_id = "your-qqbot-app-id"
+app_secret = "your-qqbot-app-secret"
+token_endpoint = "https://bots.qq.com/app/getAppAccessToken"
+api_base = "https://api.sgroup.qq.com"
+gateway_url = "wss://api.sgroup.qq.com/websocket"
+share_session_in_channel = false

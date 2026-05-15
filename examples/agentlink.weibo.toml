@@ -1,0 +1,24 @@
+data_dir = "./data"
+
+[[projects]]
+name = "demo"
+
+[projects.agent]
+type = "codex"
+
+[projects.agent.options]
+work_dir = "D:/go/src/cmsCloud"
+mode = "suggest"
+codex_bin = "codex"
+
+[[projects.platforms]]
+type = "weibo"
+
+[projects.platforms.options]
+name = "weibo"
+app_id = "your-weibo-app-id"
+app_secret = "your-weibo-app-secret"
+token_endpoint = "https://open-im.api.weibo.com/open/auth/ws_token"
+api_base = "https://open-im.api.weibo.com"
+ws_endpoint = "ws://open-im.api.weibo.com/ws/stream"
+share_session_in_channel = false
