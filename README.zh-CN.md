@@ -1,5 +1,127 @@
 ﻿# AgentLink
 
+<div align="center">
+
+**🚀 连接任意聊天渠道到任意编程 Agent**
+
+[![构建状态](https://github.com/doit9816/AgentLink/actions/workflows/release.yml/badge.svg)](https://github.com/doit9816/AgentLink/actions)
+[![许可证](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![系统支持](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg)](https://github.com/doit9816/AgentLink/releases)
+
+[English](README.md) | 简体中文
+
+</div>
+
+AgentLink 是一个**高性能 Rust 桥接服务**，无缝连接聊天渠道与 AI 编程 Agent，让你在熟悉的聊天应用中实现自然语言编程工作流。
+
+## ✨ 核心特性
+
+### 🌐 全渠道聊天支持
+原生适配 **15+ 聊天渠道**：
+- **企业级**: 飞书/Lark (WebSocket 长连接)、钉钉、Slack (Socket Mode)、企业微信
+- **社交渠道**: Telegram (长轮询)、Discord (Gateway)、LINE、微博
+- **即时通讯**: 微信个人号 (iLink)、QQ/OneBot、QQ 官方 Bot、MAX
+- **可扩展**: HTTP Webhook 和 WebSocket Bridge 支持自定义集成
+
+### 🤖 多 Agent 架构
+统一接口支持主流编程 Agent：
+- **Codex** (exec 和 app-server 双模式)
+- **Claude Code** / **Cursor** / **Gemini CLI**
+- **OpenCode** / **Kimi** / **Qoder** / **iFlow**
+- **通用 CLI 适配器**：支持任何命令行 Agent
+
+### 🖥️ 精美桌面客户端
+**Tauri 2.0 + Vue 3** 跨平台 GUI：
+- 🎨 现代化响应式界面
+- 🔐 扫码即用，快速接入飞书/Lark/微信
+- ⚙️ 可视化配置编辑器，实时校验
+- 🧪 内置消息测试，支持富媒体
+- 📊 实时服务状态监控
+
+### 🔄 自动化跨平台构建
+**GitHub Actions 驱动的 CI/CD**：
+- ✅ 每次推送到 `main` 自动构建
+- 📦 平台专属安装包 (MSI、DMG、AppImage、DEB)
+- 🏷️ 语义化版本标签发布
+- 🔧 优化的图标配置，完美支持所有平台
+
+### 🔒 生产级特性
+- **会话管理**: SQLite 持久化会话存储
+- **审批工作流**: 内置 `/allow` 和 `/deny` 命令
+- **富媒体**: 图片、文件、音频、视频、位置、卡片
+- **安全性**: Token 认证、签名校验
+- **可靠性**: 消息队列、错误恢复、超时处理
+
+## 🚀 快速开始
+
+### 下载安装
+
+从 [GitHub Releases](https://github.com/doit9816/AgentLink/releases) 下载最新版本：
+
+**Windows**
+```powershell
+# 下载 .msi 或 .exe 安装包
+# 或解压 .zip 直接运行 agentlink.exe
+```
+
+**macOS**
+```bash
+# 下载 .dmg 文件
+# 拖动 AgentLink.app 到应用程序文件夹
+```
+
+**Linux**
+```bash
+# 下载 AppImage 或 DEB 包
+chmod +x AgentLink-*.AppImage
+./AgentLink-*.AppImage
+```
+
+### 首次运行
+
+1. **启动桌面客户端**配置你的第一个聊天渠道
+2. **扫描二维码**快速接入飞书/Lark/微信
+3. **配置 Agent** (Codex、Claude Code 等)
+4. **开始对话**，享受 AI 编程助手！
+
+## 🏗️ 架构设计
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                      聊天渠道层                              │
+│  飞书 │ Slack │ Telegram │ Discord │ 微信 │ QQ │ ...       │
+└────────────────────┬────────────────────────────────────────┘
+                     │
+                     ▼
+┌─────────────────────────────────────────────────────────────┐
+│                    渠道适配器层                              │
+│         (原生 WebSocket/HTTP/长轮询实现)                     │
+└────────────────────┬────────────────────────────────────────┘
+                     │
+                     ▼
+┌─────────────────────────────────────────────────────────────┐
+│                  AgentLink 引擎层                            │
+│  • 会话管理        • 消息路由                                │
+│  • 审批工作流      • 富媒体处理                              │
+└────────────────────┬────────────────────────────────────────┘
+                     │
+                     ▼
+┌─────────────────────────────────────────────────────────────┐
+│                   Agent 适配器层                             │
+│    Codex │ Claude Code │ Gemini │ Cursor │ 通用 CLI         │
+└─────────────────────────────────────────────────────────────┘
+```
+
+## 🎯 应用场景
+
+- **团队协作**: 让团队通过熟悉的聊天应用与 AI Agent 交互
+- **代码审查**: 在 Slack/Discord 频道中获得即时代码建议和审查
+- **DevOps 自动化**: 通过聊天命令触发部署和基础设施变更
+- **学习入门**: 为新开发者提供交互式编程辅导
+- **多渠道触达**: 在用户偏好的消息渠道上提供服务
+
+## 📚 文档目录
+
 AgentLink 是一个 Rust 独立桥接服务，用来把飞书、钉钉、微信、Telegram 等聊天渠道连接到 Codex、Claude Code、Gemini、OpenCode 等编程 Agent。
 
 核心链路：
@@ -56,6 +178,114 @@ src/codex.rs         Codex exec/app-server Agent
 src/cli_agent.rs     通用 CLI Agent 与 Claude/Gemini/OpenCode 等预设
 client/              Tauri 桌面客户端
 docs/                中文协议说明
+```
+
+## 📦 打包与发布
+
+### 本地打包
+
+**Windows 一键打包**
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\auto-package.ps1
+```
+
+这个脚本会：
+- ✅ 运行所有测试
+- 🔨 Release 模式构建核心桥接服务
+- 🖥️ 构建 Tauri 桌面客户端
+- 📦 生成平台安装包 (MSI、NSIS)
+- 🗜️ 创建发布归档文件
+
+**macOS/Linux 打包**
+```bash
+bash ./scripts/package-unix.sh <version> <target-name>
+```
+
+### GitHub Actions 自动发布
+
+我们的 CI/CD 流水线会自动构建和发布：
+
+**推送到 `main` 分支时**
+- 触发 Windows、macOS、Linux 三平台构建
+- 更新 `latest` 预发布标签
+- 上传所有平台产物
+
+**推送版本标签 (`v*`) 时**
+```bash
+git tag v0.2.0
+git push origin v0.2.0
+```
+- 创建正式发布版本
+- 生成发布说明
+- 发布系统专属安装包：
+  - **Windows**: `.zip`、`.msi`、`.exe` (NSIS)
+  - **macOS**: `.tar.gz`、`.dmg`
+  - **Linux**: `.tar.gz`、`.AppImage`、`.deb`
+
+### 发布产物
+
+每个发布版本包含：
+- 📦 **核心桥接服务**: 独立 CLI 可执行文件
+- 🖥️ **桌面客户端**: 系统专属安装包
+- 📄 **文档**: README 和示例配置
+- 🔧 **配置模板**: 示例 TOML 文件
+
+### 构建优化亮点
+
+我们最近修复了跨系统构建问题，现在支持：
+- ✅ **统一图标配置**: 符合 Tauri 2.0 规范，支持所有系统
+- ✅ **系统特定构建**: macOS 使用 DMG，Linux 使用标准 bundle
+- ✅ **并行构建**: 三系统同时构建，加快发布速度
+- ✅ **自动化测试**: 每次构建前运行完整测试套件
+
+## 🛠️ 开发指南
+
+### 环境要求
+- Rust 1.70+
+- Node.js 18+
+- 平台特定依赖（见下文）
+
+### 从源码构建
+
+```bash
+# 克隆仓库
+git clone https://github.com/doit9816/AgentLink.git
+cd AgentLink
+
+# 构建核心桥接服务
+cargo build --release
+
+# 构建桌面客户端
+cd client/agentlink-desktop
+npm install
+npm run build
+
+# 可执行文件位于 target/release/
+```
+
+### 平台特定依赖
+
+**Linux**
+```bash
+sudo apt-get install -y \
+  libwebkit2gtk-4.1-dev \
+  build-essential \
+  libssl-dev \
+  libayatana-appindicator3-dev \
+  librsvg2-dev \
+  patchelf
+```
+
+**macOS**
+```bash
+# 需要 Xcode 命令行工具
+xcode-select --install
+```
+
+**Windows**
+```powershell
+# 需要 Visual Studio Build Tools 或 MSVC
+# WebView2 运行时 (Windows 10/11 通常已预装)
 ```
 
 ## 客户端构建脚本
@@ -644,6 +874,59 @@ dist/agentlink-v0.1.0-windows-amd64.zip
 ```
 
 如果已经用 `scripts/auto-package.ps1` 构建过桌面客户端，zip 内还会包含 `desktop/` 目录，里面有桌面 exe 和可用的安装包目录。
+
+## 🤝 贡献指南
+
+我们欢迎各种形式的贡献！
+
+1. 🐛 **报告 Bug**: 提交 issue 并附上复现步骤
+2. 💡 **建议功能**: 在 discussions 中分享你的想法
+3. 🔧 **提交 PR**: 修复 bug 或添加新功能
+4. 📖 **改进文档**: 帮助其他人更好地理解 AgentLink
+5. 🌍 **添加渠道**: 为新的聊天渠道实现适配器
+
+### 开发流程
+
+1. Fork 本仓库
+2. 创建特性分支 (`git checkout -b feature/AmazingFeature`)
+3. 提交更改 (`git commit -m 'Add some AmazingFeature'`)
+4. 推送到分支 (`git push origin feature/AmazingFeature`)
+5. 开启 Pull Request
+
+## 📊 项目状态
+
+- ✅ **核心引擎**: 稳定
+- ✅ **桌面客户端**: 稳定 (Tauri 2.0)
+- ✅ **CI/CD 流水线**: 完全自动化
+- ✅ **15+ 聊天渠道**: 生产就绪
+- 🚧 **富媒体**: 持续扩展渠道支持
+- 🚧 **移动客户端**: 规划中
+
+## 🙏 致谢
+
+基于优秀的开源技术构建：
+- [Rust](https://www.rust-lang.org/) - 系统编程语言
+- [Tauri](https://tauri.app/) - 桌面应用框架
+- [Vue 3](https://vuejs.org/) - 渐进式 JavaScript 框架
+- [Tokio](https://tokio.rs/) - Rust 异步运行时
+
+## 📄 许可证
+
+本项目采用 MIT 许可证 - 详见 [LICENSE](LICENSE) 文件
+
+---
+
+<div align="center">
+
+**⭐ 如果 AgentLink 对你有帮助，请在 GitHub 上给我们一个 Star！**
+
+[报告 Bug](https://github.com/doit9816/AgentLink/issues) · [功能建议](https://github.com/doit9816/AgentLink/issues) · [English Docs](README.md)
+
+</div>
+
+---
+
+## 附录：详细功能说明
 
 ## 命令
 
