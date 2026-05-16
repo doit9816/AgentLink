@@ -41,7 +41,7 @@ jobs:
             artifact_name: agentlink-macos
             archive_glob: dist/*.tar.gz
             bundle_glob: target/agentlink-desktop/release/bundle/**
-            release_artifacts: dist/*.tar.gz,target/agentlink-desktop/release/bundle/dmg/*.dmg,target/agentlink-desktop/release/bundle/macos/*.app.tar.gz
+            release_artifacts: dist/*.tar.gz,target/agentlink-desktop/release/bundle/dmg/*.dmg
           - label: Linux package
             os: ubuntu-22.04
             target_name: linux-amd64
@@ -120,7 +120,13 @@ jobs:
           npm ci
           export CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target/agentlink-desktop"
           cargo check --manifest-path src-tauri/Cargo.toml
-          npm run build
+          
+          # Use platform-specific build command
+          if [[ "${{ matrix.os }}" == "macos-latest" ]]; then
+            npm run build:dmg
+          else
+            npm run build
+          fi
           popd
 
           bash ./scripts/package-unix.sh \
