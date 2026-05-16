@@ -20,13 +20,55 @@ permissions:
   contents: write
 
 jobs:
-  windows:
-    name: Windows package
-    runs-on: windows-latest
+  desktop:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include:
+          - label: Windows package
+            os: windows-latest
+            target_name: windows-amd64
+            artifact_name: agentlink-windows-amd64
+            archive_glob: dist/*.zip
+            bundle_glob: target/agentlink-desktop/release/bundle/**
+            release_artifacts: dist/*.zip,target/agentlink-desktop/release/bundle/msi/*.msi,target/agentlink-desktop/release/bundle/nsis/*.exe
+          - label: macOS package
+            os: macos-latest
+            target_name: macos
+            artifact_name: agentlink-macos
+            archive_glob: dist/*.tar.gz
+            bundle_glob: target/agentlink-desktop/release/bundle/**
+            release_artifacts: dist/*.tar.gz,target/agentlink-desktop/release/bundle/dmg/*.dmg,target/agentlink-desktop/release/bundle/macos/*.app.tar.gz
+          - label: Linux package
+            os: ubuntu-22.04
+            target_name: linux-amd64
+            artifact_name: agentlink-linux-amd64
+            archive_glob: dist/*.tar.gz
+            bundle_glob: target/agentlink-desktop/release/bundle/**
+            release_artifacts: dist/*.tar.gz,target/agentlink-desktop/release/bundle/appimage/*.AppImage,target/agentlink-desktop/release/bundle/deb/*.deb
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Install Linux dependencies
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -38,7 +80,8 @@ jobs:
           cache: npm
           cache-dependency-path: client/agentlink-desktop/package-lock.json
 
-      - name: Build and package
+      - name: Build and package (Windows)
+        if: matrix.os == 'windows-latest'
         shell: pwsh
         run: |
           $version = "${{ github.event.inputs.version }}"
@@ -51,17 +94,48 @@ jobs:
           }
           powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\auto-package.ps1 `
             -Version $version `
-            -TargetName windows-amd64 `
+            -TargetName ${{ matrix.target_name }} `
             -CoreTargetDir "$env:GITHUB_WORKSPACE\target\agentlink" `
             -DesktopTargetDir "$env:GITHUB_WORKSPACE\target\agentlink-desktop"
+
+      - name: Build and package (macOS/Linux)
+        if: matrix.os != 'windows-latest'
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ github.event.inputs.version }}"
+          ref_name="${{ github.ref_name }}"
+          if [[ "$ref_name" =~ ^v(.+)$ ]]; then
+            version="${BASH_REMATCH[1]}"
+          fi
+          if [[ -z "$version" ]]; then
+            version="0.1.0"
+          fi
+
+          export CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target/agentlink"
+          cargo test
+          cargo build --release
+
+          pushd client/agentlink-desktop
+          npm ci
+          export CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target/agentlink-desktop"
+          cargo check --manifest-path src-tauri/Cargo.toml
+          npm run build
+          popd
+
+          bash ./scripts/package-unix.sh \
+            "$version" \
+            "${{ matrix.target_name }}" \
+            "$GITHUB_WORKSPACE/target/agentlink" \
+            "$GITHUB_WORKSPACE/target/agentlink-desktop"
 
       - name: Upload archive
         uses: actions/upload-artifact@v4
         with:
-          name: agentlink-windows-amd64
+          name: ${{ matrix.artifact_name }}
           path: |
-            dist/*.zip
-            target/agentlink-desktop/release/bundle/**
+            ${{ matrix.archive_glob }}
+            ${{ matrix.bundle_glob }}
           if-no-files-found: error
 
       - name: Publish latest prerelease
@@ -76,10 +150,10 @@ jobs:
             Use v* releases for stable versions.
           prerelease: true
           allowUpdates: true
-          removeArtifacts: true
+          removeArtifacts: false
           replacesArtifacts: true
           makeLatest: false
-          artifacts: "dist/*.zip,target/agentlink-desktop/release/bundle/msi/*.msi,target/agentlink-desktop/release/bundle/nsis/*.exe"
+          artifacts: ${{ matrix.release_artifacts }}
 
       - name: Publish version release
         if: startsWith(github.ref, 'refs/tags/v')
@@ -93,4 +167,4 @@ jobs:
           allowUpdates: true
           replacesArtifacts: true
           artifactErrorsFailBuild: true
-          artifacts: "dist/*.zip,target/agentlink-desktop/release/bundle/msi/*.msi,target/agentlink-desktop/release/bundle/nsis/*.exe"
+          artifacts: ${{ matrix.release_artifacts }}
