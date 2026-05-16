@@ -127,7 +127,7 @@ AgentLink 是一个 Rust 独立桥接服务，用来把飞书、钉钉、微信�
 核心链路：
 
 ```text
-Platform -> Engine -> AgentSession -> 编程 Agent CLI / app-server
+Channel -> Engine -> AgentSession -> 编程 Agent CLI / app-server
 ```
 
 v1 已完成：
@@ -293,15 +293,15 @@ xcode-select --install
 Windows 下建议使用脚本构建 Tauri 客户端，脚本会固定使用 Node.js 18+、先构建 Vue，再构建 Tauri release，并可选重新打包。
 
 ```powershell
-cd D:\go\src\cmsCloud\tools\agentlink
+cd /path/to/agentlink
 powershell -ExecutionPolicy Bypass -File .\scripts\build-client.ps1 -SkipInstall -Launch
 ```
 
 常用参数：
 
-- `-NodeDir F:\nvm\v18.20.8`：指定 Node.js 18+ 目录，默认就是这个路径。
-- `-CargoTargetDir H:\agentlink-desktop-target`：指定客户端 Rust 构建目录，避免污染主工程 target。
-- `-BridgeCargoTargetDir H:\agentlink-target`：指定 AgentLink 主程序打包构建目录，避免 D 盘空间不足。
+- `-NodeDir /path/to/nodejs`：指定 Node.js 18+ 目录。
+- `-CargoTargetDir /path/to/desktop-target`：指定客户端 Rust 构建目录，避免污染主工程 target。
+- `-BridgeCargoTargetDir /path/to/bridge-target`：指定 AgentLink 主程序打包构建目录，避免磁盘空间不足。
 - `-SkipInstall`：已有 `node_modules` 时跳过 `npm ci`。
 - `-SkipTests`：跳过 Tauri `cargo check`。
 - `-SkipPackage`：只构建客户端，不重新生成 dist zip。
@@ -312,7 +312,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build-client.ps1 -SkipInstall
 本地一键打包推荐使用 `scripts/auto-package.ps1`。它会依次完成核心程序测试与 release build、Tauri 桌面端构建、安装包收集、`dist` zip 生成。
 
 ```powershell
-cd D:\go\src\cmsCloud\tools\agentlink
+cd /path/to/agentlink
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\auto-package.ps1
 ```
 
@@ -322,8 +322,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\auto-package.ps1
 - `-SkipInstall`：跳过桌面端 `npm ci`，适合本机已有 `node_modules`。
 - `-SkipDesktop`：只构建核心 `agentlink.exe` 和 zip。
 - `-SkipArchive`：只做构建，不生成 `dist` zip。
-- `-CoreTargetDir H:\agentlink-core-target`：指定核心程序构建目录。
-- `-DesktopTargetDir H:\agentlink-desktop-target`：指定桌面端构建目录。
+- `-CoreTargetDir /path/to/core-target`：指定核心程序构建目录。
+- `-DesktopTargetDir /path/to/desktop-target`：指定桌面端构建目录。
 
 推送到 GitHub 后，`.github/workflows/release.yml` 会在 `main`、PR、`v*` tag 或手动触发时自动构建 Windows、macOS、Linux 产物。
 
@@ -368,7 +368,7 @@ acp
 type = "gemini"
 
 [projects.agent.options]
-work_dir = "D:/go/src/cmsCloud"
+work_dir = "/path/to/your/project"
 command = "gemini"
 args = ["-p", "--output-format", "stream-json"]
 prompt_stdin = true
@@ -407,7 +407,7 @@ examples/agentlink.agents.toml
 type = "codex"
 
 [projects.agent.options]
-work_dir = "D:/go/src/cmsCloud"
+work_dir = "/path/to/your/project"
 backend = "exec"
 codex_bin = "codex"
 mode = "suggest"              # suggest / auto-edit / full-auto / yolo
@@ -521,10 +521,10 @@ cargo run -- --config examples/agentlink.all.toml --project demo --platform qqbo
 
 ```powershell
 # 真正由 bridge 打印二维码、扫码后自动写 app_id/app_secret
-agentlink setup --platform feishu --config examples/agentlink.all.toml --project demo --work-dir D:/go/src/cmsCloud
+agentlink setup --platform feishu --config examples/agentlink.all.toml --project demo --work-dir /path/to/your/project
 
 # Lark 同理
-agentlink setup --platform lark --config examples/agentlink.all.toml --project demo --work-dir D:/go/src/cmsCloud
+agentlink setup --platform lark --config examples/agentlink.all.toml --project demo --work-dir /path/to/your/project
 
 # QQ 个人号：二维码登录发生在 NapCat/LLOneBot，bridge 自动写 OneBot 接入配置
 agentlink setup --platform qq --config examples/agentlink.all.toml --project demo --ws-url ws://127.0.0.1:3001
@@ -645,7 +645,7 @@ cargo run -- --config examples/agentlink.http.toml
 agentlink feishu setup --config agentlink.toml --project demo
 
 # 直接写入统一配置，扫码成功后会自动写入 app_id/app_secret、platform id 和 default_platforms
-agentlink feishu setup --config examples/agentlink.all.toml --project demo --work-dir D:/go/src/cmsCloud
+agentlink feishu setup --config examples/agentlink.all.toml --project demo --work-dir /path/to/your/project
 
 # 已有应用凭证：校验并写入配置
 agentlink feishu setup --config agentlink.toml --project demo --app cli_xxx:sec_xxx
