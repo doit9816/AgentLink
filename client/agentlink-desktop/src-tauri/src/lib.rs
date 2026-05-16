@@ -75,10 +75,13 @@ struct AgentCheckOptions {
     command: Option<String>,
 }
 
+#[cfg_attr(not(windows), allow(dead_code))]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PickPathOptions {
+    #[allow(dead_code)]
     kind: String,
+    #[allow(dead_code)]
     current: Option<String>,
 }
 
