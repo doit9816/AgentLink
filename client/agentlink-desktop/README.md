@@ -1,5 +1,13 @@
 # AgentLink Desktop
 
+The desktop app is a Tauri shell around the Rust `agentlink` CLI. It now defaults to the repo-local CLI layout used by the refactored project:
+
+- executable: `target/release/agentlink` on macOS/Linux, `target/release/agentlink.exe` on Windows
+- sample config: `examples/agentlink.<n>.toml`
+- working directory: project root
+
+The desktop path picker uses native OS dialogs on Windows, macOS, and Linux.
+
 ## Build
 
 - `npm run dev`: start the Tauri desktop app in development mode

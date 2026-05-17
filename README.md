@@ -104,12 +104,17 @@ cd AgentLink
 # Build the core bridge
 cargo build --release
 
+# Validate a config file
+./target/release/agentlink validate-config examples/agentlink.1.toml
+
 # Build the desktop client
 cd client/agentlink-desktop
 npm install
 npm run build
 
-# The executable will be in target/release/
+# Outputs:
+# - CLI: ../target/release/agentlink
+# - Desktop bundles: src-tauri/target/release/bundle/
 ```
 
 ### Platform-Specific Dependencies
@@ -221,6 +226,26 @@ The package script builds the core bridge, the desktop client, and the Windows r
 │    Codex │ Claude Code │ Gemini │ Cursor │ Generic CLI      │
 └─────────────────────────────────────────────────────────────┘
 ```
+
+## 🗂️ Code Layout
+
+The Rust workspace has been refactored from a flat `src/*.rs` layout into feature-oriented modules:
+
+```text
+src/
+  agents/      Codex integration and generic CLI agent presets
+  app/         config loading and registry assembly
+  channels/    native chat channels plus Bridge/HTTP adapters
+  core/        shared traits, messages, approvals, and session types
+  engine/      routing, session serialization, approval flow, final replies
+  setup/       setup commands such as Feishu/Lark bootstrap helpers
+  store/       SQLite-backed persistence
+  testing/     mock platform/agent helpers for e2e and integration tests
+  lib.rs       public exports for embedding and tests
+  main.rs      CLI entrypoint and default runtime wiring
+```
+
+`src/lib.rs` still re-exports the main public modules, so existing imports can keep working while new code moves to the namespaced layout.
 
 ## 🎯 Use Cases
 

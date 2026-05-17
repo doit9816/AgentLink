@@ -130,6 +130,84 @@ AgentLink 是一个 Rust 独立桥接服务，用来把飞书、钉钉、微信�
 Channel -> Engine -> AgentSession -> 编程 Agent CLI / app-server
 ```
 
+## 交互流程图
+
+### 1. 总体交互
+
+```mermaid
+flowchart TD
+    A[聊天渠道消息<br/>Feishu Slack Telegram Bridge HTTP] --> B[channels<br/>适配器解析统一消息]
+    B --> C[engine<br/>按 session_key 路由]
+    C --> D{是否审批命令}
+    D -- 是 --> E[store<br/>读取待审批记录]
+    E --> F[engine<br/>执行 allow / deny]
+    F --> G[agents<br/>恢复或结束会话]
+    D -- 否 --> H[store<br/>加载或创建会话]
+    H --> I[agents<br/>Codex / CLI Agent]
+    I --> J{Agent 需要审批?}
+    J -- 是 --> K[store<br/>写入 approval_id]
+    K --> L[engine<br/>向聊天渠道发送审批提示]
+    J -- 否 --> M[engine<br/>整理最终回复]
+    G --> M
+    M --> N[channels<br/>发送文本/富媒体结果]
+    N --> O[用户看到最终回复]
+```
+
+### 2. 单条消息处理
+
+```mermaid
+flowchart TD
+    A[用户发送一条消息] --> B[Channel Adapter 接收原始事件]
+    B --> C[转换为统一 Message / Attachment]
+    C --> D[engine 校验项目与平台配置]
+    D --> E{session_key 是否已有运行中任务}
+    E -- 是 --> F[进入会话串行队列等待]
+    E -- 否 --> G[创建或复用 AgentSession]
+    F --> G
+    G --> H[store 读取历史会话与审批状态]
+    H --> I{是否为 /allow 或 /deny}
+    I -- 是 --> J[更新审批记录并恢复会话]
+    I -- 否 --> K[把消息写入当前会话上下文]
+    J --> L[调用 Agent 执行]
+    K --> L
+    L --> M{执行结果类型}
+    M -- 需要审批 --> N[生成 approval_id 并持久化]
+    N --> O[回发审批提示消息]
+    M -- 执行成功 --> P[整理最终文本或富媒体结果]
+    M -- 执行失败 --> Q[整理错误信息]
+    O --> R[等待用户后续审批命令]
+    P --> S[store 保存会话快照]
+    Q --> S
+    S --> T[Channel Adapter 发送最终回复]
+    T --> U[本次消息处理完成]
+```
+
+### 3. Desktop Client 与核心链路关系
+
+```mermaid
+flowchart LR
+    A[Desktop Client<br/>Tauri + Vue] --> B[Tauri Commands]
+    B --> C[setup 模块<br/>扫码与初始化]
+    B --> D[app::config<br/>读取/校验配置]
+    B --> E[启动 agentlink CLI]
+    E --> F[main.rs / Registry]
+    F --> G[channels]
+    F --> H[engine]
+    F --> I[agents]
+    H <--> J[store]
+    G <--> K[聊天渠道]
+    H --> G
+    C --> D
+    A -. 测试消息 / 状态查看 .-> B
+```
+
+可以把它理解成两条并行关系：
+
+- `client` 负责配置、setup、状态查看、启动/停止本地 `agentlink` 进程，以及少量测试能力。
+- 真正处理聊天消息的是 `agentlink` CLI 进程内部的 `channels -> engine -> agents -> store` 主链路。
+
+也就是说，桌面端不是消息转发必经层；它更像本地控制面板。即使没有 `client`，只要配置文件准备好，直接运行 `agentlink run --config ...`，消息链路也能独立工作。
+
 v1 已完成：
 
 - 多编程 Agent 架构，Codex 是第一个真实 Agent。
@@ -158,27 +236,42 @@ v1 已完成：
 - 统一富媒体消息结构：图片、文件、音频、视频、位置、卡片、贴纸、raw 事件先在 HTTP/Bridge/Engine/Codex 主链路打通。
 - Tauri 桌面客户端骨架，可做 setup、校验配置、启动/停止 AgentLink、发送 HTTP 测试消息。
 
-## 目录
+文档入口：
+
+- [English README](README.md)
+- [Bridge WebSocket 协议](docs/agentlink-protocol.zh-CN.md)
+- [桌面端说明](client/agentlink-desktop/README.md)
+
+## 代码目录
+
+最近已经从早期的 `src/*.rs` 平铺结构，重构为按职责分层的模块目录：
 
 ```text
-src/core.rs          公共 trait、消息、事件、审批类型
-src/engine.rs        消息路由、会话队列、会话复用、审批流、最终结果输出
-src/store.rs         SQLite SessionStore
-src/mock.rs          MockPlatform / MockAgent，用于 e2e
-src/bridge.rs        WebSocket Bridge Platform
-src/http_channel.rs  HTTP 聊天渠道参考实现
-src/feishu.rs        飞书/Lark 原生平台
-src/dingtalk.rs      钉钉原生平台
-src/telegram.rs      Telegram long polling 原生平台
-src/slack.rs         Slack Socket Mode 原生平台
-src/discord.rs       Discord Gateway 原生平台
-src/qq.rs            QQ/OneBot 正向 WebSocket 原生平台
-src/more_channels.rs Line / 企业微信 / MAX / 微信个人号 / QQBot / Weibo
-src/codex.rs         Codex exec/app-server Agent
-src/cli_agent.rs     通用 CLI Agent 与 Claude/Gemini/OpenCode 等预设
+src/
+  agents/            Codex 与通用 CLI Agent 预设
+  app/               配置加载、运行时注册表
+  channels/          原生聊天渠道与 Bridge/HTTP 适配器
+  core/              公共 trait、消息、审批、会话类型
+  engine/            路由、串行会话、审批流、最终结果输出
+  setup/             setup 命令与飞书/Lark 初始化辅助
+  store/             SQLite SessionStore
+  testing/           MockPlatform / MockAgent 与测试辅助
+  lib.rs             对外导出与兼容 re-export
+  main.rs            CLI 入口与默认 Registry 装配
 client/              Tauri 桌面客户端
-docs/                中文协议说明
+docs/                协议与补充说明
 ```
+
+当前模块边界可以这样理解：
+
+- `core` 负责定义协议和抽象。
+- `engine` 负责编排消息生命周期。
+- `channels` 负责把真实聊天渠道翻译成统一事件。
+- `agents` 负责把统一请求翻译给 Codex、Claude Code、Gemini 等 Agent。
+- `app` 负责把配置、Registry、CLI 运行时接起来。
+- `setup` 与 `testing` 分别承接初始化和测试场景，避免核心链路继续堆在入口文件里。
+
+兼容性上，`src/lib.rs` 仍然保留了主要 re-export，所以旧 import 在一段时间内还能继续工作，但新增代码建议直接使用新的命名空间路径。
 
 ## 📦 打包与发布
 
