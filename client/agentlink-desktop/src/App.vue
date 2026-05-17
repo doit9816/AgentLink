@@ -252,7 +252,7 @@ const FIELD_HELP = {
 };
 
 const SELECT_HELP = {
-  operationMode: "接口优先会优先使用客户端内置 Rust 接口，减少黑窗；命令行兼容用于直接调用 agentlink.exe。",
+  operationMode: "接口优先会优先使用客户端内置 Rust 接口，减少黑窗；命令行兼容用于直接调用 AgentLink 可执行文件。",
   channelTarget: "接收目标代表一个用户、群或 Webhook。一个接收目标同一时刻只能绑定一个 Agent。",
   receiveIdType: "告诉平台按哪种 ID 发送消息。飞书群通常用 chat_id，私聊可用 open_id；Telegram 用 chat_id。",
   messageType: "测试消息类型。日常调试先用 text，其它类型主要用于验证媒体或原始事件适配。",
@@ -262,9 +262,17 @@ const SELECT_HELP = {
   agentArgs: "额外命令行参数。每行一个，便于后续传入模型、模式或自定义开关。"
 };
 
-const DEFAULT_DIST_DIR = "../../dist/agentlink-v0.1.0-windows-amd64";
-const DEFAULT_EXE_PATH = `${DEFAULT_DIST_DIR}/agentlink.exe`;
-const defaultConfigPath = (index = 1) => `${DEFAULT_DIST_DIR}/examples/agentlink.${index}.toml`;
+const CURRENT_OS = (() => {
+  const userAgent = navigator.userAgent.toLowerCase();
+  if (userAgent.includes("windows")) return "windows";
+  if (userAgent.includes("mac os") || userAgent.includes("macintosh")) return "macos";
+  return "unix";
+})();
+
+const DEFAULT_WORK_DIR = ".";
+const DEFAULT_EXE_PATH = CURRENT_OS === "windows" ? "target/release/agentlink.exe" : "target/release/agentlink";
+const defaultConfigPath = (index = 1) => `examples/agentlink.${index}.toml`;
+const DIRECT_SEND_CHANNELS = new Set(["http", "feishu", "lark", "telegram", "dingtalk", "slack", "discord", "line", "weixin"]);
 
 function defaultsFor(fields) {
   return Object.fromEntries(fields.map(([name, _label, value]) => [name, value ?? ""]));
@@ -327,7 +335,7 @@ function createConnection(index = 1) {
     exePath: DEFAULT_EXE_PATH,
     configPath: defaultConfigPath(index),
     project: index === 1 ? "demo" : `demo-${index}`,
-    workDir: "D:/go/src/cmsCloud",
+    workDir: DEFAULT_WORK_DIR,
     operationMode: "api",
     selectedChannel: "feishu",
     selectedAgent: "codex",
@@ -421,6 +429,7 @@ const activeTargetLock = computed(() => targetLock(activeTargetKey.value));
 const canStartBridge = computed(() => !bridgeRuntime.running && !operationRunning.value && !activeTargetLock.value);
 const currentTest = computed(() => connection.value.test ?? { messageType: "text", content: "" });
 const canScan = computed(() => Boolean(currentChannel.value.scan));
+const canDirectSendTest = computed(() => DIRECT_SEND_CHANNELS.has(connection.value.selectedChannel));
 const hasReusableChannelConfig = computed(() => Boolean(findReusableChannelFields(connection.value.selectedChannel)));
 const agentReady = computed(() => connection.value.selectedAgent === "mock" || Boolean((currentAgentFields.value.command ?? "").trim()));
 const qrPanelVisible = computed(() => qrSetup.visible && qrSetup.platform === connection.value.selectedChannel);
@@ -429,6 +438,12 @@ const qrHelpText = computed(() => {
   if (qrSetup.platform === "feishu" || qrSetup.platform === "lark") return "扫码后请在飞书/Lark 页面里继续确认创建或授权，下面日志会显示轮询状态。";
   if (qrSetup.qrUrl) return "该二维码会打开平台绑定或网关配置页面，请按页面提示完成配置。";
   return "网关型通道的二维码可能由外部网关显示，客户端会展示 setup 结果。";
+});
+const sendTestHelpText = computed(() => {
+  if (canDirectSendTest.value) {
+    return `当前 ${currentChannel.value.label} 支持客户端直发测试，可直接用下面的目标和内容做联调。`;
+  }
+  return `当前 ${currentChannel.value.label} 不支持客户端直发测试。请先启动 Bridge，再从真实聊天渠道发一条消息，或切换到 HTTP 通道做注入测试。`;
 });
 
 function labelStatus(value) {
@@ -777,21 +792,45 @@ function clientStatePayload() {
   };
 }
 
+function looksLikeWindowsPath(value) {
+  return /^[a-z]:[\\/]/i.test(String(value ?? "").trim());
+}
+
 function migrateLegacyPath(path, index = 1) {
   const value = String(path ?? "").trim();
   if (!value) return "";
-  return value
+  let next = value
     .replaceAll("codex-chat-bridge-v0.1.0-windows-amd64", "agentlink-v0.1.0-windows-amd64")
+    .replaceAll("dist/agentlink-v0.1.0-windows-amd64/agentlink.exe", "target/release/agentlink.exe")
+    .replaceAll("dist\\agentlink-v0.1.0-windows-amd64\\agentlink.exe", "target/release/agentlink.exe")
     .replaceAll("codex-chat-bridge.exe", "agentlink.exe")
     .replaceAll("codex-chat-bridge-client.exe", "agentlink-desktop.exe")
     .replaceAll("examples/bridge.", "examples/agentlink.")
     .replaceAll("examples\\bridge.", "examples\\agentlink.")
     .replace(/examples[\\/]bridge$/i, `examples/agentlink.${index}.toml`);
+
+  if (CURRENT_OS !== "windows") {
+    next = next
+      .replace(/(^|[\\/])agentlink\.exe$/i, "$1agentlink")
+      .replace(/(^|[\\/])agentlink-desktop\.exe$/i, "$1agentlink-desktop");
+  }
+
+  if (/dist[\\/]agentlink-v[^\\/]+[\\/]examples[\\/]agentlink\.\d+\.toml$/i.test(next)) {
+    next = defaultConfigPath(index);
+  }
+
+  return next;
 }
 
 function normalizeConnectionPaths(item, index) {
   item.exePath = migrateLegacyPath(item.exePath, index + 1) || DEFAULT_EXE_PATH;
   item.configPath = migrateLegacyPath(item.configPath, index + 1) || defaultConfigPath(index + 1);
+  if (!String(item.workDir ?? "").trim() || (CURRENT_OS !== "windows" && looksLikeWindowsPath(item.workDir))) {
+    item.workDir = DEFAULT_WORK_DIR;
+  }
+  if (item.agentFields?.codex && (!String(item.agentFields.codex.workDir ?? "").trim() || (CURRENT_OS !== "windows" && looksLikeWindowsPath(item.agentFields.codex.workDir)))) {
+    item.agentFields.codex.workDir = item.workDir;
+  }
   return item;
 }
 
@@ -902,6 +941,7 @@ async function pickPath(kind) {
     await refreshStatus();
   } catch (error) {
     appendLog(`选择路径失败：${error}`);
+    notify("error", "选择路径失败", error);
   }
 }
 
@@ -909,7 +949,8 @@ async function resetDefaultPaths() {
   const index = Math.max(1, state.connections.findIndex((item) => item.id === connection.value.id) + 1);
   connection.value.exePath = DEFAULT_EXE_PATH;
   connection.value.configPath = defaultConfigPath(index);
-  appendLog("已恢复 AgentLink 默认路径。");
+  connection.value.workDir = DEFAULT_WORK_DIR;
+  appendLog(`已恢复 ${CURRENT_OS === "windows" ? "Windows" : CURRENT_OS === "macos" ? "macOS" : "Unix"} 默认路径。`);
   await saveClientState("保存默认路径");
   await refreshStatus();
 }
@@ -1111,7 +1152,7 @@ function refreshDiscoveredTargets() {
   return run("刷新发现目标", async () => {
     await refreshBridgeRuntime();
     if (!bridgeRuntime.running) {
-      return "Bridge 未启动。请先在“连接”页点击“启动”，再从飞书给机器人发一条消息。";
+      return `Bridge 未启动。请先在“连接”页点击“启动”，再从 ${currentChannel.value.label} 给机器人或目标通道发一条消息。`;
     }
     const items = await invoke("discover_channel_targets", { options: options() });
     const added = applyDiscoveredTargets(items || []);
@@ -1131,6 +1172,10 @@ function refreshTargetsIfEmpty() {
 
 async function sendTest() {
   ensureTargets();
+  if (!canDirectSendTest.value) {
+    notify("warning", "当前 Channel 不支持直发测试", sendTestHelpText.value);
+    return;
+  }
   return run("发送测试", async () => {
     const payload = {
       session_key: activeTarget.value.sessionKey,
@@ -1499,13 +1544,16 @@ listen("tray-stop-bridge", () => {
         </details>
         <label>content<textarea v-model="currentTest.content"></textarea></label>
         <div class="action-row">
-          <button type="button" :disabled="Boolean(activeTargetLock)" @click="sendTest">发送测试</button>
+          <button type="button" :disabled="Boolean(activeTargetLock) || !canDirectSendTest" @click="sendTest">发送测试</button>
           <button type="button" class="secondary" @click="refreshDiscoveredTargets">刷新发现目标</button>
           <button type="button" class="secondary" @click="addTarget">新增目标</button>
           <button type="button" class="danger" @click="removeTarget">删除目标</button>
         </div>
         <div class="hint">
-          推荐流程：先启动 bridge，然后在当前聊天渠道里给机器人发一条消息，再点击“刷新发现目标”。客户端会从已收到的消息里解析用户、群和会话信息。
+          {{ sendTestHelpText }}
+        </div>
+        <div class="hint">
+          推荐流程：先启动 bridge，然后在当前聊天渠道里给机器人或目标通道发一条消息，再点击“刷新发现目标”。客户端会从已收到的消息里解析用户、群和会话信息。
         </div>
       </section>
     </section>

@@ -438,8 +438,7 @@ fn pick_path(options: PickPathOptions) -> Result<Option<String>, String> {
     }
     #[cfg(not(windows))]
     {
-        let _ = options;
-        Err("path picker is currently implemented for Windows desktop only".to_string())
+        pick_path_native(options)
     }
 }
 
@@ -517,6 +516,42 @@ if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console
     }
     let picked = String::from_utf8_lossy(&output.stdout).trim().to_string();
     Ok((!picked.is_empty()).then_some(picked))
+}
+
+#[cfg(not(windows))]
+fn pick_path_native(options: PickPathOptions) -> Result<Option<String>, String> {
+    let current_dir = options
+        .current
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(resolve_output_path)
+        .and_then(|path| {
+            if path.is_dir() {
+                Some(path)
+            } else {
+                path.parent().map(Path::to_path_buf)
+            }
+        })
+        .filter(|path| path.exists())
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+
+    let dialog = rfd::FileDialog::new().set_directory(&current_dir);
+    let picked = match options.kind.as_str() {
+        "exe" => dialog
+            .set_title("选择 AgentLink 可执行文件")
+            .pick_file(),
+        "config" => dialog
+            .set_title("选择 AgentLink 配置文件")
+            .add_filter("TOML", &["toml"])
+            .pick_file(),
+        "folder" => dialog
+            .set_title("选择项目工作目录")
+            .pick_folder(),
+        other => return Err(format!("unsupported path picker kind: {other}")),
+    };
+
+    Ok(picked.and_then(|path| path.into_os_string().into_string().ok()))
 }
 
 #[tauri::command]
