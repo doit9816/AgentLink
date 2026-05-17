@@ -1,176 +1,95 @@
-name: build-release
+name: Release
 
 on:
-  workflow_dispatch:
-    inputs:
-      version:
-        description: "Package version"
-        required: false
-        default: "0.1.0"
   push:
-    branches:
-      - main
     tags:
       - "v*"
-  pull_request:
-    branches:
-      - main
+  workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
-  desktop:
-    name: ${{ matrix.label }}
-    runs-on: ${{ matrix.os }}
+  build-desktop:
+    name: Build ${{ matrix.name }}
+    runs-on: ${{ matrix.platform }}
     strategy:
       fail-fast: false
-      max-parallel: 1
       matrix:
         include:
-          - label: Windows package
-            os: windows-latest
-            target_name: windows-amd64
-            artifact_name: agentlink-windows-amd64
-            archive_glob: dist/*.zip
-            bundle_glob: target/agentlink-desktop/release/bundle/**
-            release_artifacts: dist/*.zip,target/agentlink-desktop/release/bundle/msi/*.msi,target/agentlink-desktop/release/bundle/nsis/*.exe
-          - label: macOS package
-            os: macos-latest
-            target_name: macos
-            artifact_name: agentlink-macos
-            archive_glob: dist/*.tar.gz
-            bundle_glob: target/agentlink-desktop/release/bundle/**
-            release_artifacts: dist/*.tar.gz,target/agentlink-desktop/release/bundle/dmg/*.dmg
-          - label: Linux package
-            os: ubuntu-22.04
-            target_name: linux-amd64
-            artifact_name: agentlink-linux-amd64
-            archive_glob: dist/*.tar.gz
-            bundle_glob: target/agentlink-desktop/release/bundle/**
-            release_artifacts: dist/*.tar.gz,target/agentlink-desktop/release/bundle/appimage/*.AppImage,target/agentlink-desktop/release/bundle/deb/*.deb
+          - name: Windows x64
+            platform: windows-latest
+            args: ""
+          - name: Linux x64
+            platform: ubuntu-22.04
+            args: ""
+          - name: macOS Apple Silicon
+            platform: macos-latest
+            args: "--target aarch64-apple-darwin"
+          - name: macOS Intel
+            platform: macos-latest
+            args: "--target x86_64-apple-darwin"
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Install Linux dependencies
-        if: matrix.os == 'ubuntu-22.04'
+        if: matrix.platform == 'ubuntu-22.04'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
             libwebkit2gtk-4.1-dev \
-            build-essential \
-            curl \
-            wget \
-            file \
-            libxdo-dev \
-            libssl-dev \
             libayatana-appindicator3-dev \
             librsvg2-dev \
             patchelf
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: lts/*
           cache: npm
           cache-dependency-path: client/agentlink-desktop/package-lock.json
 
-      - name: Build and package (Windows)
-        if: matrix.os == 'windows-latest'
-        shell: pwsh
-        run: |
-          $version = "${{ github.event.inputs.version }}"
-          $refName = "${{ github.ref_name }}"
-          if ($refName -match '^v(.+)$') {
-            $version = $Matches[1]
-          }
-          if ([string]::IsNullOrWhiteSpace($version)) {
-            $version = "0.1.0"
-          }
-          powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\auto-package.ps1 `
-            -Version $version `
-            -TargetName ${{ matrix.target_name }} `
-            -CoreTargetDir "$env:GITHUB_WORKSPACE\target\agentlink" `
-            -DesktopTargetDir "$env:GITHUB_WORKSPACE\target\agentlink-desktop"
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
 
-      - name: Build and package (macOS/Linux)
-        if: matrix.os != 'windows-latest'
-        shell: bash
-        run: |
-          set -euo pipefail
-          version="${{ github.event.inputs.version }}"
-          ref_name="${{ github.ref_name }}"
-          if [[ "$ref_name" =~ ^v(.+)$ ]]; then
-            version="${BASH_REMATCH[1]}"
-          fi
-          if [[ -z "$version" ]]; then
-            version="0.1.0"
-          fi
+      - name: Add macOS Apple Silicon target
+        if: matrix.name == 'macOS Apple Silicon'
+        run: rustup target add aarch64-apple-darwin
 
-          export CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target/agentlink"
-          cargo test
-          cargo build --release
+      - name: Add macOS Intel target
+        if: matrix.name == 'macOS Intel'
+        run: rustup target add x86_64-apple-darwin
 
-          pushd client/agentlink-desktop
-          npm ci
-          export CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target/agentlink-desktop"
-          cargo check --manifest-path src-tauri/Cargo.toml
-          
-          # Use platform-specific build command
-          if [[ "${{ matrix.os }}" == "macos-latest" ]]; then
-            npm run build:dmg
-          else
-            npm run build
-          fi
-          popd
-
-          bash ./scripts/package-unix.sh \
-            "$version" \
-            "${{ matrix.target_name }}" \
-            "$GITHUB_WORKSPACE/target/agentlink" \
-            "$GITHUB_WORKSPACE/target/agentlink-desktop"
-
-      - name: Upload archive
-        uses: actions/upload-artifact@v4
+      - name: Cache Rust
+        uses: swatinem/rust-cache@v2
         with:
-          name: ${{ matrix.artifact_name }}
-          path: |
-            ${{ matrix.archive_glob }}
-            ${{ matrix.bundle_glob }}
-          if-no-files-found: error
+          workspaces: |
+            .
+            client/agentlink-desktop/src-tauri -> target
 
-      - name: Publish latest prerelease
-        if: github.ref == 'refs/heads/main'
-        uses: ncipollo/release-action@v1
+      - name: Install frontend dependencies
+        working-directory: client/agentlink-desktop
+        run: npm ci
+
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tag: latest
-          name: AgentLink Latest Build
-          body: |
-            Automated build artifacts for the latest main branch commit.
+          projectPath: client/agentlink-desktop
+          args: ${{ matrix.args }}
+          tagName: v__VERSION__
+          releaseName: AgentLink v__VERSION__
+          releaseBody: |
+            Download the installer or bundle for your platform from the assets below.
 
-            Use v* releases for stable versions.
-          prerelease: true
-          allowUpdates: true
-          removeArtifacts: false
-          replacesArtifacts: true
-          makeLatest: false
-          artifacts: ${{ matrix.release_artifacts }}
-
-      - name: Publish version release
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: ncipollo/release-action@v1
-        with:
-          tag: ${{ github.ref_name }}
-          name: AgentLink ${{ github.ref_name }}
-          body: |
-            AgentLink automated stable build.
+            macOS builds are not notarized by Apple. If Gatekeeper blocks the app, clear the quarantine attribute before opening:
+            ```bash
+            xattr -dr com.apple.quarantine ~/Downloads/AgentLink_*.dmg
+            open ~/Downloads/AgentLink_*.dmg
+            ```
+          releaseDraft: false
           prerelease: false
-          allowUpdates: true
-          replacesArtifacts: true
-          artifactErrorsFailBuild: true
-          artifacts: ${{ matrix.release_artifacts }}
+          updaterJsonPreferNsis: true
