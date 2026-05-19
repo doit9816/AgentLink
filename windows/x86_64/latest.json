@@ -1,10 +1,10 @@
 {
-  "version": "0.1.12",
-  "pub_date": "2026-05-19T12:37:59.9726461Z",
+  "version": "0.1.13",
+  "pub_date": "2026-05-19T13:24:25.3988424Z",
   "platforms": {
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTVjJlQldnVm9WbnBldW5SZ0J0djNtdDlwa3hDaml6WkNDak1xa09RUTZLMlJQOFhKUWxSRklCZVZwTld5U3A4dWlrM1p3MGF1dllVd3BtMmRrRjhzOTdBdit6SDNOU0E4PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzc5MTk0MjczCWZpbGU6QWdlbnRMaW5rXzAuMS4xMl94NjQtc2V0dXAuZXhlClJSSmY1cVZWeWttbXNDQjI2bmFYR3gzOFJhWURBVkNCcEtmL2JlRHdXUlpOQ01Vb0x3ZUowOFBoOU1SSGw4UGJ2d3NYS3RBd3JIaVVmMS8xb3c0U0N3PT0K",
-      "url": "https://raw.githubusercontent.com/doit9816/AgentLink/updater-feed/windows/x86_64/AgentLink_0.1.12_x64-setup.exe"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTVjJlQldnVm9WbnVCVXhBS1E3QVNJcERBbFQvb3JPd3BQYWJIdFdOMEU5VmF5N3BJK0piam00V3FwbDlpM3lZbFpBRkg1dUNKYmFRamJEUHFkeElOWldUM2YwU1dtYncwPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzc5MTk3MDU4CWZpbGU6QWdlbnRMaW5rXzAuMS4xM194NjQtc2V0dXAuZXhlCkJPYnU1Z2VEMGdweTNSWlgxdDZKZks0akpPMWlKdlB0bzZmLy9rMFVraVhjSzZuUm1XVGhOQzd2ZGFTUk1KdDJIS1E3QWpOZVlFeGJld1Q4NlZsZkR3PT0K",
+      "url": "https://raw.githubusercontent.com/doit9816/AgentLink/updater-feed/windows/x86_64/AgentLink_0.1.13_x64-setup.exe"
     }
   }
 }
