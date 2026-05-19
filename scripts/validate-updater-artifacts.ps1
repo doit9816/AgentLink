@@ -50,7 +50,7 @@ if (-not $artifacts) {
     throw "No updater-compatible artifacts were found under $BundleDir for $PlatformKey"
 }
 
-$installer = $artifacts | Sort-Object Name | Select-Object -First 1
+$installer = $artifacts | Select-Object -First 1
 if (-not $installer) {
     throw "No updater-compatible installer or bundle was found under $BundleDir"
 }
