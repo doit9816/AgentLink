@@ -2624,27 +2624,27 @@ fn status_summary(
     agent_type: &str,
 ) -> String {
     if !exe_exists {
-        return "AgentLink exe not found".to_string();
+        return "AgentLink 可执行文件不存在，请先确认路径。".to_string();
     }
     if !config_exists {
-        return "config file is not created yet".to_string();
+        return "配置文件还没有生成，请先保存配置。".to_string();
     }
     if !project_configured {
-        return format!("project `{project}` is not in config yet");
+        return format!("配置文件里还没有 project `{project}`。");
     }
     if !channel_configured {
-        return format!("channel `{platform}` is not in config yet");
+        return format!("project `{project}` 里还没有 channel `{platform}`。");
     }
     if !agent_configured {
-        return format!("agent `{agent_type}` is not in config yet");
+        return format!("project `{project}` 里还没有 agent `{agent_type}`。");
     }
     if !agent_installed {
-        return format!("agent `{agent_type}` command is not found");
+        return format!("没有找到 agent `{agent_type}` 的命令，请检查安装或命令路径。");
     }
     if !binding_ready {
-        return format!("channel `{platform}` still needs credentials or gateway binding");
+        return format!("channel `{platform}` 还需要补充密钥或完成网关绑定。");
     }
-    format!("`{platform}` with `{agent_type}` is ready")
+    format!("`{platform}` 和 `{agent_type}` 已就绪，可以启动。")
 }
 
 fn agent_is_available(agent_type: &str, command: &Option<String>) -> bool {

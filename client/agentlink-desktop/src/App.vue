@@ -1467,7 +1467,7 @@ listen("tray-stop-bridge", () => {
           </div>
 
           <label>连接名称<input v-model="connection.name" /></label>
-          <label>AgentLink exe
+          <label>AgentLink 可执行文件
             <div class="input-with-button">
               <input v-model="connection.exePath" />
               <button type="button" class="small-button" @click="pickPath('exe')">选择</button>
@@ -1531,7 +1531,7 @@ listen("tray-stop-bridge", () => {
           </div>
 
           <div class="status-grid">
-            <div class="state-card"><span>AgentLink exe</span><strong :class="{ good: status.exeExists, bad: !status.exeExists }">{{ status.exeExists ? "存在" : "不存在" }}</strong></div>
+            <div class="state-card"><span>AgentLink 可执行文件</span><strong :class="{ good: status.exeExists, bad: !status.exeExists }">{{ status.exeExists ? "存在" : "不存在" }}</strong></div>
             <div class="state-card"><span>Bridge 运行</span><strong :class="{ good: bridgeRuntime.running, bad: !bridgeRuntime.running }">{{ bridgeRuntime.running ? `PID: ${bridgeRuntime.pid}` : "未启动" }}</strong></div>
             <div class="state-card"><span>config</span><strong :class="{ good: status.configExists, bad: !status.configExists }">{{ status.configExists ? "存在" : "不存在" }}</strong></div>
             <div class="state-card"><span>project</span><strong :class="{ good: status.projectConfigured, bad: !status.projectConfigured }">{{ labelStatus(status.connectionStatus) }}</strong></div>

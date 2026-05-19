@@ -248,6 +248,27 @@ textarea {
   font: inherit;
 }
 
+select {
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  padding-right: 34px;
+  background-image:
+    linear-gradient(45deg, transparent 50%, #5d6d82 50%),
+    linear-gradient(135deg, #5d6d82 50%, transparent 50%),
+    linear-gradient(to right, #d5dee8, #d5dee8);
+  background-position:
+    calc(100% - 18px) calc(50% - 2px),
+    calc(100% - 12px) calc(50% - 2px),
+    calc(100% - 34px) 50%;
+  background-size: 6px 6px, 6px 6px, 1px 18px;
+  background-repeat: no-repeat;
+}
+
+select:hover {
+  border-color: #93a7bc;
+}
+
 .input-with-button {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
