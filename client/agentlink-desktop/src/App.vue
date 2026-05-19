@@ -1,5 +1,5 @@
 ﻿<script setup>
-import { computed, reactive, ref, watch } from "vue";
+import { computed, reactive, ref, shallowRef, watch } from "vue";
 import { getVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -415,9 +415,11 @@ const bridgeRuntime = reactive({
 });
 const updatePreferences = reactive({
   autoCheckUpdates: true,
+  autoInstallUpdates: true,
   lastUpdateCheckAt: "",
   lastUpdateError: ""
 });
+const availableUpdate = shallowRef(null);
 const updateStatus = reactive({
   appVersion: "",
   checked: false,
@@ -899,6 +901,7 @@ async function loadClientState() {
       if (saved.updatePreferences) {
         Object.assign(updatePreferences, {
           autoCheckUpdates: saved.updatePreferences.autoCheckUpdates ?? true,
+          autoInstallUpdates: saved.updatePreferences.autoInstallUpdates ?? true,
           lastUpdateCheckAt: saved.updatePreferences.lastUpdateCheckAt || "",
           lastUpdateError: saved.updatePreferences.lastUpdateError || ""
         });
@@ -1053,7 +1056,14 @@ async function checkForUpdates(manual = true) {
   updateStatus.error = "";
   try {
     const update = await check({ timeout: 15000 });
-    updateStatus.available = update;
+    availableUpdate.value = update;
+    updateStatus.available = update
+      ? {
+          version: update.version,
+          date: update.date,
+          body: update.body
+        }
+      : null;
     updateStatus.installed = false;
     updateStatus.downloaded = 0;
     updateStatus.total = 0;
@@ -1061,11 +1071,16 @@ async function checkForUpdates(manual = true) {
     if (manual) {
       notify(update ? "success" : "warning", update ? "发现新版本" : "已是最新版本", update ? `版本 ${update.version}` : "当前桌面端无需更新。");
     } else if (update) {
-      notify("warning", "发现新版本", `版本 ${update.version}`);
+      notify(
+        updatePreferences.autoInstallUpdates ? "success" : "warning",
+        updatePreferences.autoInstallUpdates ? "发现新版本，准备自动安装" : "发现新版本",
+        `版本 ${update.version}`
+      );
     }
     return update;
   } catch (error) {
     const message = String(error);
+    availableUpdate.value = null;
     updateStatus.available = null;
     updateCheckFinished(message);
     if (manual) {
@@ -1079,13 +1094,29 @@ async function checkForUpdates(manual = true) {
 
 function maybeAutoCheckForUpdate() {
   if (!updatePreferences.autoCheckUpdates || updateStatus.checked) return;
-  checkForUpdates(false).catch((error) => appendLog(`自动检查更新失败：${error}`));
+  checkForUpdates(false)
+    .then((update) => {
+      if (update && updatePreferences.autoInstallUpdates) {
+        return installAvailableUpdate({ auto: true });
+      }
+      return null;
+    })
+    .catch((error) => appendLog(`自动检查更新失败：${error}`));
 }
 
-async function installAvailableUpdate() {
-  if (!updateStatus.available || updateStatus.installing) return;
+async function installAvailableUpdate({ auto = false } = {}) {
+  if (!availableUpdate.value || updateStatus.installing) return;
   await refreshBridgeRuntime();
   if (bridgeRuntime.running) {
+    if (auto) {
+      const message = "AgentLink Bridge 正在运行，已跳过自动安装。停止 Bridge 后可手动完成更新。";
+      updateStatus.error = message;
+      updatePreferences.lastUpdateError = message;
+      notify("warning", "已跳过自动安装", message);
+      saveClientState("保存升级状态").catch((saveError) => appendLog(`保存升级状态失败：${saveError}`));
+      return;
+    }
+
     const confirmed = window.confirm("AgentLink Bridge 正在运行。安装更新前需要停止 Bridge，是否现在停止并继续安装？");
     if (!confirmed) {
       notify("warning", "已延后安装", "停止 Bridge 后可继续安装更新。");
@@ -1105,7 +1136,7 @@ async function installAvailableUpdate() {
   updateStatus.error = "";
   try {
     let totalBytes = 0;
-    await updateStatus.available.downloadAndInstall((event) => {
+    await availableUpdate.value.downloadAndInstall((event) => {
       if (event.event === "Started") {
         totalBytes = event.data.contentLength || 0;
         updateStatus.downloaded = 0;
@@ -1117,7 +1148,7 @@ async function installAvailableUpdate() {
       }
     });
     updateStatus.installed = true;
-    notify("success", "更新已安装", "请重启桌面端让新版本生效。");
+    notify("success", "更新已安装", auto ? "更新已自动安装，请重启桌面端让新版本生效。" : "请重启桌面端让新版本生效。");
   } catch (error) {
     updateStatus.error = String(error);
     updatePreferences.lastUpdateError = updateStatus.error;
@@ -1138,6 +1169,11 @@ async function relaunchDesktop() {
 
 function toggleAutoUpdateChecks() {
   updatePreferences.autoCheckUpdates = !updatePreferences.autoCheckUpdates;
+  saveClientState("保存升级偏好").catch((error) => appendLog(`保存升级偏好失败：${error}`));
+}
+
+function toggleAutoInstallUpdates() {
+  updatePreferences.autoInstallUpdates = !updatePreferences.autoInstallUpdates;
   saveClientState("保存升级偏好").catch((error) => appendLog(`保存升级偏好失败：${error}`));
 }
 
@@ -1389,6 +1425,7 @@ watch(
 watch(() => state.connections, persistSoon, { deep: true });
 watch(activeConnectionId, persistSoon);
 watch(() => updatePreferences.autoCheckUpdates, persistSoon);
+watch(() => updatePreferences.autoInstallUpdates, persistSoon);
 
 loadClientState();
 appendLog("客户端已就绪：可以创建多个连接，并分别选择 Channel 与 Agent。");
@@ -1546,7 +1583,7 @@ listen("tray-stop-bridge", () => {
           <div class="section-head">
             <div>
               <h2>软件更新</h2>
-              <p>使用 stable 更新通道。发现新版本后需要手动确认下载和安装。</p>
+              <p>使用 stable 更新通道。可自动检查更新，并在允许时自动下载安装。</p>
             </div>
             <button type="button" class="small-button" :disabled="updateStatus.checking || updateStatus.installing" @click="checkForUpdates(true)">
               {{ updateStatus.checking ? "检查中" : "检查更新" }}
@@ -1574,6 +1611,10 @@ listen("tray-stop-bridge", () => {
           <label class="checkbox-row">
             <input type="checkbox" :checked="updatePreferences.autoCheckUpdates" @change="toggleAutoUpdateChecks" />
             启动后自动检查更新
+          </label>
+          <label class="checkbox-row">
+            <input type="checkbox" :checked="updatePreferences.autoInstallUpdates" @change="toggleAutoInstallUpdates" />
+            发现新版本后自动下载安装
           </label>
           <p v-if="updatePreferences.lastUpdateCheckAt">上次检查：{{ updatePreferences.lastUpdateCheckAt }}</p>
 

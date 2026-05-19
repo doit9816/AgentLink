@@ -1,22 +1,23 @@
-use agentlink::bridge::{BridgePlatform, BridgePlatformConfig};
-use agentlink::channel_setup::run_setup_command;
-use agentlink::cli_agent::CliAgent;
-use agentlink::codex::CodexAgent;
-use agentlink::config::Config;
-use agentlink::dingtalk::{DingTalkPlatform, DingTalkPlatformConfig};
-use agentlink::discord::{DiscordPlatform, DiscordPlatformConfig};
-use agentlink::feishu::{FeishuPlatform, FeishuPlatformConfig};
-use agentlink::feishu_setup::run_feishu_command;
-use agentlink::http_channel::{HttpPlatform, HttpPlatformConfig};
-use agentlink::mock::{MockAgent, MockPlatform};
-use agentlink::more_channels::{
-    max_config_from_options, qqbot_config_from_options, weibo_config_from_options,
-    weixin_config_from_options, LinePlatform, LinePlatformConfig, MaxPlatform, QqBotPlatform,
-    WeComPlatform, WeComPlatformConfig, WeiboPlatform, WeixinPlatform,
-};
-use agentlink::qq::{QqPlatform, QqPlatformConfig};
-use agentlink::slack::{SlackPlatform, SlackPlatformConfig};
-use agentlink::telegram::{TelegramPlatform, TelegramPlatformConfig};
+use agentlink::agents::cli_agent::CliAgent;
+use agentlink::agents::codex::CodexAgent;
+use agentlink::app::config::Config;
+use agentlink::channels::bridge::{BridgePlatform, BridgePlatformConfig};
+use agentlink::channels::dingtalk::{DingTalkPlatform, DingTalkPlatformConfig};
+use agentlink::channels::discord::{DiscordPlatform, DiscordPlatformConfig};
+use agentlink::channels::feishu::{FeishuPlatform, FeishuPlatformConfig};
+use agentlink::channels::http_channel::{HttpPlatform, HttpPlatformConfig};
+use agentlink::channels::line::{LinePlatform, LinePlatformConfig};
+use agentlink::channels::max::{max_config_from_options, MaxPlatform};
+use agentlink::channels::qqbot::{qqbot_config_from_options, QqBotPlatform};
+use agentlink::channels::qq::{QqPlatform, QqPlatformConfig};
+use agentlink::channels::slack::{SlackPlatform, SlackPlatformConfig};
+use agentlink::channels::telegram::{TelegramPlatform, TelegramPlatformConfig};
+use agentlink::channels::wecom::{WeComPlatform, WeComPlatformConfig};
+use agentlink::channels::weibo::{weibo_config_from_options, WeiboPlatform};
+use agentlink::channels::weixin::{weixin_config_from_options, WeixinPlatform};
+use agentlink::setup::channel_setup::run_setup_command;
+use agentlink::setup::feishu_setup::run_feishu_command;
+use agentlink::testing::mock::{MockAgent, MockPlatform};
 use agentlink::{Engine, Registry, SessionStore};
 use anyhow::Result;
 use std::path::PathBuf;
@@ -228,7 +229,7 @@ fn validate_with_registry(config: &Config, registry: &Registry) -> Result<()> {
     Ok(())
 }
 
-fn platform_options(platform: &agentlink::config::PlatformConfig) -> toml::value::Table {
+fn platform_options(platform: &agentlink::app::config::PlatformConfig) -> toml::value::Table {
     let mut options = platform.options.clone();
     if let Some(id) = &platform.id {
         options

@@ -226,6 +226,8 @@ struct ClientConnectionState {
 struct UpdatePreferences {
     #[serde(default = "default_auto_check_updates")]
     auto_check_updates: bool,
+    #[serde(default = "default_auto_install_updates")]
+    auto_install_updates: bool,
     #[serde(default)]
     last_update_check_at: Option<String>,
     #[serde(default)]
@@ -236,6 +238,7 @@ impl Default for UpdatePreferences {
     fn default() -> Self {
         Self {
             auto_check_updates: true,
+            auto_install_updates: true,
             last_update_check_at: None,
             last_update_error: None,
         }
@@ -243,6 +246,10 @@ impl Default for UpdatePreferences {
 }
 
 fn default_auto_check_updates() -> bool {
+    true
+}
+
+fn default_auto_install_updates() -> bool {
     true
 }
 

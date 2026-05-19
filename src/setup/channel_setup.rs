@@ -1,4 +1,4 @@
-﻿use crate::feishu_setup::run_feishu_command;
+use crate::setup::feishu_setup::run_feishu_command;
 use anyhow::{anyhow, Result};
 
 #[derive(Debug, Clone)]

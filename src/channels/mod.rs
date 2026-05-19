@@ -1,0 +1,15 @@
+pub mod bridge;
+pub mod dingtalk;
+pub mod discord;
+pub mod feishu;
+pub mod http_channel;
+pub mod line;
+pub mod max;
+pub mod qqbot;
+pub mod qq;
+pub mod slack;
+pub mod telegram;
+mod support;
+pub mod wecom;
+pub mod weibo;
+pub mod weixin;
