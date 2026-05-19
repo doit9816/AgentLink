@@ -1,10 +1,10 @@
 {
-  "version": "v0.1.11",
-  "pub_date": "2026-05-19T11:48:21.2283475Z",
+  "version": "0.1.12",
+  "pub_date": "2026-05-19T12:36:29.6846921Z",
   "platforms": {
     "linux-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTVjJlQldnVm9WbmxxS1o5cHFTNVFQRDhBNVowNjBBRFlEUVhMY0lyemltZGZwUitEMCtNVjNBanVVQ3VZaXErZnBKUTVzcDBKRXdNbzVmaXQxWE9TSmNmdldLUlUxdWdzPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzc5MTkxMjg2CWZpbGU6QWdlbnRMaW5rXzAuMS4zX2FtZDY0LkFwcEltYWdlCjJUd1JJd0p6WXF4ZzJJdFhIelhnL1RjTm01SEpQQU1kdVBBcjNUaHhpbzc2R2lZdnF1V0VObG9TeWNUQUZLdDQzb2tFTThsOVJqTWkwa01lbmRoZ0FRPT0K",
-      "url": "https://raw.githubusercontent.com/doit9816/AgentLink/updater-feed/linux/x86_64/AgentLink_0.1.3_amd64.AppImage"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTVjJlQldnVm9WbmlGbk54WU9Oc3lZYVl0WnJoQUJyQWJraExMR1d2REVCQlVEMkVSS0dKY2Y5K290b0drdkpVMVhReUZxQXRQSndWVk5kM0o3QmhXci9sa0lxRDlTQVFzPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzc5MTk0MTc5CWZpbGU6QWdlbnRMaW5rXzAuMS4xMl9hbWQ2NC5BcHBJbWFnZQpYUVFmVk00VlBhMG40d0d0VktlWDZMZndMSGtwTXpFV2NjdUZoZUFKd0RiaThKZThOL3ZQemF1cktRamIwbmpTYkt5dVNXY1hUSzRoZTBZc0RRbERDdz09Cg==",
+      "url": "https://raw.githubusercontent.com/doit9816/AgentLink/updater-feed/linux/x86_64/AgentLink_0.1.12_amd64.AppImage"
     }
   }
 }

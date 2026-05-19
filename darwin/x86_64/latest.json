@@ -1,9 +1,9 @@
 {
-  "version": "v0.1.11",
-  "pub_date": "2026-05-19T11:45:27.4286250Z",
+  "version": "0.1.12",
+  "pub_date": "2026-05-19T12:35:02.0188300Z",
   "platforms": {
     "darwin-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTVjJlQldnVm9WbnZ3TnVKQ2tUMnkvM21sR1NrN2g2Z0NPTHNQTXNxMW0yeGtBelI5REd4VXI3NjBxNGpkOTFJWlcvWVJpUzVSVWdEaWhqOXcrckdQS3VHOEZoS2MxaVEwPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzc5MTkxMTE4CWZpbGU6QWdlbnRMaW5rLmFwcC50YXIuZ3oKUm0vQXFZekFnNXlCalpidWYyZWV2NUlVaUlHMXhldTUzd3p5b1dmS25ja055Q0N4V3Z6eGl1VUR2K1VVWTRLQUs0SnpYSXRlNG9sZlFYeEdaeTR6QlE9PQo=",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTVjJlQldnVm9WbnRWOVNNWExzaG1GQ3BBTExyQWhlajF0eUVsSktXd0grWm5xcmJFNVFKNldybWZpbEtLVi9melZTSzArWENvUllEWnBuRktNbjVXL1ZGd3luVmREMUFvPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzc5MTk0MDkyCWZpbGU6QWdlbnRMaW5rLmFwcC50YXIuZ3oKWE1JSDhkcTJZQ2U2TjZkakJQUHF3ZHhRNTJBY1crR3dTaS96RFdGVGNlaDd5ZXo5cWlEcyt5TWNZLzBBVlNuSkNvejQ0L21LWmxWUHdZRk1KeDBSRFE9PQo=",
       "url": "https://raw.githubusercontent.com/doit9816/AgentLink/updater-feed/darwin/x86_64/AgentLink.app.tar.gz"
     }
   }
