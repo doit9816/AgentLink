@@ -4,6 +4,19 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+function Test-UpdaterArtifact {
+    param(
+        [Parameter(Mandatory = $true)]
+        [System.IO.FileInfo]$File
+    )
+
+    $name = $File.Name
+    return (
+        $name -match '\.(exe|msi|zip|AppImage|dmg)$' -or
+        $name -match '\.(tar\.gz)$'
+    ) -and $name -notmatch '\.sig$'
+}
+
 if (-not (Test-Path -LiteralPath $BundleDir)) {
     throw "Bundle directory not found: $BundleDir"
 }
@@ -20,9 +33,7 @@ if ($metadataText -notmatch '"signature"\s*:') {
 }
 
 $bundleFiles = Get-ChildItem -LiteralPath $BundleDir -Recurse -File
-$installer = $bundleFiles | Where-Object {
-    $_.Extension -match '^\.(exe|msi|zip|AppImage|dmg)$' -and $_.Name -notmatch '\.sig$'
-} | Select-Object -First 1
+$installer = $bundleFiles | Where-Object { Test-UpdaterArtifact -File $_ } | Select-Object -First 1
 if (-not $installer) {
     throw "No updater-compatible installer or bundle was found under $BundleDir"
 }

@@ -6,6 +6,19 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+function Test-UpdaterArtifact {
+    param(
+        [Parameter(Mandatory = $true)]
+        [System.IO.FileInfo]$File
+    )
+
+    $name = $File.Name
+    return (
+        $name -match '\.(exe|msi|zip|AppImage|dmg)$' -or
+        $name -match '\.(tar\.gz)$'
+    ) -and $name -notmatch '\.sig$'
+}
+
 if (-not $FeedDir) {
     throw "FeedDir is required."
 }
@@ -15,16 +28,15 @@ if (-not $BaseUrl) {
 }
 
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
-& powershell -ExecutionPolicy Bypass -File (Join-Path $scriptRoot "validate-updater-artifacts.ps1") -BundleDir $BundleDir
+$validateScript = Join-Path $scriptRoot "validate-updater-artifacts.ps1"
+& $validateScript -BundleDir $BundleDir
 if ($LASTEXITCODE -ne 0) {
     throw "validate-updater-artifacts.ps1 failed with exit code $LASTEXITCODE"
 }
 
 $bundleFiles = Get-ChildItem -LiteralPath $BundleDir -Recurse -File
 $latest = $bundleFiles | Where-Object { $_.Name -eq "latest.json" } | Select-Object -First 1
-$artifacts = $bundleFiles | Where-Object {
-    $_.Extension -match '^\.(exe|msi|zip|AppImage|dmg)$' -and $_.Name -notmatch '\.sig$'
-}
+$artifacts = $bundleFiles | Where-Object { Test-UpdaterArtifact -File $_ }
 $signatures = $bundleFiles | Where-Object { $_.Extension -eq ".sig" }
 
 if (-not $latest) {
