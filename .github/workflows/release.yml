@@ -22,24 +22,28 @@ jobs:
             args: ""
             updaterTarget: windows
             updaterArch: x86_64
+            updaterPlatformKey: windows-x86_64
             bundleDir: client/agentlink-desktop/src-tauri/target/release/bundle
           - name: Linux x64
             platform: ubuntu-22.04
             args: ""
             updaterTarget: linux
             updaterArch: x86_64
+            updaterPlatformKey: linux-x86_64
             bundleDir: client/agentlink-desktop/src-tauri/target/release/bundle
           - name: macOS Apple Silicon
             platform: macos-latest
             args: "--target aarch64-apple-darwin"
             updaterTarget: darwin
             updaterArch: aarch64
+            updaterPlatformKey: darwin-aarch64
             bundleDir: client/agentlink-desktop/src-tauri/target/aarch64-apple-darwin/release/bundle
           - name: macOS Intel
             platform: macos-latest
             args: "--target x86_64-apple-darwin"
             updaterTarget: darwin
             updaterArch: x86_64
+            updaterPlatformKey: darwin-x86_64
             bundleDir: client/agentlink-desktop/src-tauri/target/x86_64-apple-darwin/release/bundle
 
     steps:
@@ -114,8 +118,10 @@ jobs:
         run: >
           ./scripts/stage-updater-feed.ps1
           -BundleDir ./${{ matrix.bundleDir }}
-          -FeedDir .\client\agentlink-desktop\src-tauri\target\updater-feed
+          -FeedDir ./client/agentlink-desktop/src-tauri/target/updater-feed
           -BaseUrl https://raw.githubusercontent.com/${{ github.repository }}/updater-feed/${{ matrix.updaterTarget }}/${{ matrix.updaterArch }}
+          -PlatformKey ${{ matrix.updaterPlatformKey }}
+          -Version ${{ github.ref_name }}
 
       - name: Upload updater feed artifact
         if: startsWith(github.ref, 'refs/tags/v')

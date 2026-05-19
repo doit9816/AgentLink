@@ -1,22 +1,39 @@
 param(
     [string]$BundleDir = "H:\agentlink-desktop-target\release\bundle",
     [string]$FeedDir,
-    [string]$BaseUrl
+    [string]$BaseUrl,
+    [string]$PlatformKey,
+    [string]$Version
 )
 
 $ErrorActionPreference = "Stop"
 
-function Test-UpdaterArtifact {
+function Get-UpdaterArtifacts {
     param(
         [Parameter(Mandatory = $true)]
-        [System.IO.FileInfo]$File
+        [System.IO.FileInfo[]]$BundleFiles,
+        [string]$PlatformKey
     )
 
-    $name = $File.Name
-    return (
-        $name -match '\.(exe|msi|zip|AppImage|dmg)$' -or
-        $name -match '\.(tar\.gz)$'
-    ) -and $name -notmatch '\.sig$'
+    switch -Regex ($PlatformKey) {
+        '^windows-' {
+            $candidates = $BundleFiles | Where-Object { $_.Name -match '\.exe$' -or $_.Name -match '\.msi$' -or $_.Name -match '\.(nsis\.zip|msi\.zip)$' }
+            return $candidates | Sort-Object @{ Expression = { if ($_.Name -match '\.exe$') { 0 } elseif ($_.Name -match '\.msi$') { 1 } else { 2 } } }, Name
+        }
+        '^linux-' {
+            $candidates = $BundleFiles | Where-Object { $_.Name -match '\.AppImage$' -or $_.Name -match '\.AppImage\.tar\.gz$' }
+            return $candidates | Sort-Object @{ Expression = { if ($_.Name -match '\.AppImage$') { 0 } else { 1 } } }, Name
+        }
+        '^darwin-' {
+            $candidates = $BundleFiles | Where-Object { $_.Name -match '\.app\.tar\.gz$' -or $_.Name -match '\.dmg$' }
+            return $candidates | Sort-Object @{ Expression = { if ($_.Name -match '\.app\.tar\.gz$') { 0 } else { 1 } } }, Name
+        }
+        default {
+            return $BundleFiles | Where-Object {
+                $_.Name -match '\.(exe|msi|zip|AppImage|dmg)$' -or $_.Name -match '\.(tar\.gz)$'
+            } | Sort-Object Name
+        }
+    }
 }
 
 if (-not $FeedDir) {
@@ -27,24 +44,37 @@ if (-not $BaseUrl) {
     throw "BaseUrl is required."
 }
 
+if (-not $PlatformKey) {
+    throw "PlatformKey is required."
+}
+
+if (-not $Version) {
+    if ($env:GITHUB_REF_NAME) {
+        $Version = $env:GITHUB_REF_NAME
+    }
+    else {
+        throw "Version is required."
+    }
+}
+
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $validateScript = Join-Path $scriptRoot "validate-updater-artifacts.ps1"
-& $validateScript -BundleDir $BundleDir
+& $validateScript -BundleDir $BundleDir -PlatformKey $PlatformKey
 if ($LASTEXITCODE -ne 0) {
     throw "validate-updater-artifacts.ps1 failed with exit code $LASTEXITCODE"
 }
 
 $bundleFiles = Get-ChildItem -LiteralPath $BundleDir -Recurse -File
-$latest = $bundleFiles | Where-Object { $_.Name -eq "latest.json" } | Select-Object -First 1
-$artifacts = $bundleFiles | Where-Object { Test-UpdaterArtifact -File $_ }
-$signatures = $bundleFiles | Where-Object { $_.Extension -eq ".sig" }
+$artifacts = Get-UpdaterArtifacts -BundleFiles $bundleFiles -PlatformKey $PlatformKey
+$artifact = $artifacts | Select-Object -First 1
+$signature = $bundleFiles | Where-Object { $_.Name -eq "$($artifact.Name).sig" } | Select-Object -First 1
 
-if (-not $latest) {
-    throw "latest.json was not found under $BundleDir"
+if (-not $artifact) {
+    throw "No updater-compatible artifacts were found under $BundleDir for $PlatformKey"
 }
 
-if (-not $artifacts) {
-    throw "No updater-compatible artifacts were found under $BundleDir"
+if (-not $signature) {
+    throw "No signature was found for updater artifact '$($artifact.Name)'"
 }
 
 if (Test-Path -LiteralPath $FeedDir) {
@@ -52,98 +82,20 @@ if (Test-Path -LiteralPath $FeedDir) {
 }
 $null = New-Item -ItemType Directory -Force -Path $FeedDir
 
-$copiedNames = @{}
-Copy-Item -LiteralPath $latest.FullName -Destination (Join-Path $FeedDir $latest.Name) -Force
-foreach ($artifact in $artifacts) {
-    Copy-Item -LiteralPath $artifact.FullName -Destination (Join-Path $FeedDir $artifact.Name) -Force
-    $copiedNames[$artifact.Name] = $true
-}
-foreach ($signature in $signatures) {
-    Copy-Item -LiteralPath $signature.FullName -Destination (Join-Path $FeedDir $signature.Name) -Force
-}
+Copy-Item -LiteralPath $artifact.FullName -Destination (Join-Path $FeedDir $artifact.Name) -Force
+Copy-Item -LiteralPath $signature.FullName -Destination (Join-Path $FeedDir $signature.Name) -Force
 
-$metadata = Get-Content -LiteralPath $latest.FullName -Raw | ConvertFrom-Json
+$signatureText = (Get-Content -LiteralPath $signature.FullName -Raw).Trim()
+$artifactUrl = "{0}/{1}" -f $BaseUrl.TrimEnd('/'), $artifact.Name
 
-function Update-Urls {
-    param([Parameter(Mandatory = $true)] $Node)
-
-    if ($null -eq $Node) {
-        return
-    }
-
-    $properties = $Node.PSObject.Properties
-    if ($properties.Count -gt 0) {
-        foreach ($property in $properties) {
-            if ($property.Name -eq "url" -and $property.Value -is [string]) {
-                try {
-                    $fileName = [System.IO.Path]::GetFileName(([Uri]$property.Value).AbsolutePath)
-                }
-                catch {
-                    $fileName = [System.IO.Path]::GetFileName($property.Value)
-                }
-
-                if ($copiedNames.ContainsKey($fileName)) {
-                    $property.Value = "{0}/{1}" -f $BaseUrl.TrimEnd('/'), $fileName
-                }
-            }
-            elseif ($property.Value -isnot [string]) {
-                Update-Urls -Node $property.Value
-            }
+$metadata = [ordered]@{
+    version = $Version
+    pub_date = [DateTime]::UtcNow.ToString("o")
+    platforms = [ordered]@{
+        $PlatformKey = [ordered]@{
+            signature = $signatureText
+            url = $artifactUrl
         }
-        return
-    }
-
-    if ($Node -is [System.Collections.IEnumerable] -and $Node -isnot [string]) {
-        foreach ($item in $Node) {
-            Update-Urls -Node $item
-        }
-    }
-}
-
-function Collect-Urls {
-    param(
-        [Parameter(Mandatory = $true)] $Node,
-        [Parameter(Mandatory = $true)] [System.Collections.Generic.List[string]] $Urls
-    )
-
-    if ($null -eq $Node) {
-        return
-    }
-
-    $properties = $Node.PSObject.Properties
-    if ($properties.Count -gt 0) {
-        foreach ($property in $properties) {
-            if ($property.Name -eq "url" -and $property.Value -is [string]) {
-                $Urls.Add($property.Value)
-            }
-            elseif ($property.Value -isnot [string]) {
-                Collect-Urls -Node $property.Value -Urls $Urls
-            }
-        }
-        return
-    }
-
-    if ($Node -is [System.Collections.IEnumerable] -and $Node -isnot [string]) {
-        foreach ($item in $Node) {
-            Collect-Urls -Node $item -Urls $Urls
-        }
-    }
-}
-
-Update-Urls -Node $metadata
-
-$urls = [System.Collections.Generic.List[string]]::new()
-Collect-Urls -Node $metadata -Urls $urls
-foreach ($url in $urls) {
-    try {
-        $fileName = [System.IO.Path]::GetFileName(([Uri]$url).AbsolutePath)
-    }
-    catch {
-        $fileName = [System.IO.Path]::GetFileName($url)
-    }
-
-    if (-not $copiedNames.ContainsKey($fileName)) {
-        throw "Updater metadata references '$fileName', but it was not copied into $FeedDir"
     }
 }
 
@@ -153,4 +105,7 @@ $metadata | ConvertTo-Json -Depth 100 | Set-Content -LiteralPath $outputLatest -
 Write-Host "Updater feed staged:"
 Write-Host "  feed: $FeedDir"
 Write-Host "  latest: $outputLatest"
+Write-Host "  platform: $PlatformKey"
+Write-Host "  version: $Version"
+Write-Host "  artifact: $($artifact.Name)"
 Write-Host "  baseUrl: $BaseUrl"
