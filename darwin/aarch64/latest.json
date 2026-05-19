@@ -1,0 +1,10 @@
+{
+  "version": "v0.1.11",
+  "pub_date": "2026-05-19T11:48:38.8878000Z",
+  "platforms": {
+    "darwin-aarch64": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTVjJlQldnVm9WbnVzZWNHbXN0U1JhNE9wNUsweWpaMVkwOExBRmcwWUR4c2xSRWdoekREUnpOcVY3VE11OGlRK3Z3TTBLVUNFYkhlWHRWclVWSGt1anlweUpWOW1kQ2dFPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzc5MTkxMzA5CWZpbGU6QWdlbnRMaW5rLmFwcC50YXIuZ3oKbFVIYlJkT1FIc3JVa2NkWUhobCs3MU5ocGZVM2hFSTNOZHpvN0ZGTWhNdXgwa2F6THA0QWNoZFZCcTI1aXR2TEd6RlVZWjQramxuU1VOY2tYemRBRGc9PQo=",
+      "url": "https://raw.githubusercontent.com/doit9816/AgentLink/updater-feed/darwin/aarch64/AgentLink.app.tar.gz"
+    }
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "version": "v0.1.11",
+  "pub_date": "2026-05-19T11:48:55.0356289Z",
+  "platforms": {
+    "windows-x86_64": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTVjJlQldnVm9WbnB5ZkR5UUtaeFNES2tka0kxNTVGTkZGR0NEY3pBbDV3VURzbDdHdkd5akNOR3BqbnFLOURtSElFK2c3L3F2N1lkV0t3RzlmVjhKMTRVUEdjcWlpT0EwPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzc5MTkxMzI3CWZpbGU6QWdlbnRMaW5rXzAuMS4zX3g2NC1zZXR1cC5leGUKYUVTZ0l5Q0kxN2UwVi82UkYxS0FuZzBKa1FGTzBxcENlVjRaSGhBNWJkR2pmbXRBalNkMDdOeDNKRW9vWWdJandGSWwwNitlRVpIM1p1eS95ZW9iQ3c9PQo=",
+      "url": "https://raw.githubusercontent.com/doit9816/AgentLink/updater-feed/windows/x86_64/AgentLink_0.1.3_x64-setup.exe"
+    }
+  }
+}
