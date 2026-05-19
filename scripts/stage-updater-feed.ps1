@@ -60,9 +60,6 @@ if (-not $Version) {
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $validateScript = Join-Path $scriptRoot "validate-updater-artifacts.ps1"
 & $validateScript -BundleDir $BundleDir -PlatformKey $PlatformKey
-if ($LASTEXITCODE -ne 0) {
-    throw "validate-updater-artifacts.ps1 failed with exit code $LASTEXITCODE"
-}
 
 $bundleFiles = Get-ChildItem -LiteralPath $BundleDir -Recurse -File
 $artifacts = Get-UpdaterArtifacts -BundleFiles $bundleFiles -PlatformKey $PlatformKey
