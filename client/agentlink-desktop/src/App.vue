@@ -273,9 +273,30 @@ const CURRENT_OS = (() => {
   return "unix";
 })();
 
-const DEFAULT_WORK_DIR = ".";
-const DEFAULT_EXE_PATH = CURRENT_OS === "windows" ? "target/release/agentlink.exe" : "target/release/agentlink";
-const DEFAULT_CONFIG_PATH = "examples/agentlink.all.toml";
+const IS_DEV_LAYOUT = /^https?:$/.test(window.location.protocol);
+const DEV_DEFAULT_WORK_DIR = ".";
+const DEV_DEFAULT_EXE_PATH = CURRENT_OS === "windows" ? "target/release/agentlink.exe" : "target/release/agentlink";
+const DEV_DEFAULT_CONFIG_PATH = "examples/agentlink.all.toml";
+
+function runtimeDefaults() {
+  if (IS_DEV_LAYOUT) {
+    return {
+      workDir: DEV_DEFAULT_WORK_DIR,
+      exePath: DEV_DEFAULT_EXE_PATH,
+      configPath: DEV_DEFAULT_CONFIG_PATH
+    };
+  }
+  return {
+    workDir: "",
+    exePath: "",
+    configPath: ""
+  };
+}
+
+const DEFAULTS = runtimeDefaults();
+const DEFAULT_WORK_DIR = DEFAULTS.workDir;
+const DEFAULT_EXE_PATH = DEFAULTS.exePath;
+const DEFAULT_CONFIG_PATH = DEFAULTS.configPath;
 const defaultConfigPath = () => DEFAULT_CONFIG_PATH;
 const DIRECT_SEND_CHANNELS = new Set(["http", "feishu", "lark", "telegram", "dingtalk", "slack", "discord", "line", "weixin"]);
 
@@ -699,6 +720,20 @@ function targetLabel(target) {
   return `${name} · ${target?.receiveIdType || "receive_id"} · ${value}`;
 }
 
+function pathStateLabel(kind) {
+  const raw = kind === "exe" ? connection.value.exePath : connection.value.configPath;
+  if (!String(raw ?? "").trim()) return "未配置";
+  if (kind === "exe") return status.exeExists ? "存在" : "不存在";
+  return status.configExists ? "存在" : "不存在";
+}
+
+function pathStateClass(kind) {
+  const raw = kind === "exe" ? connection.value.exePath : connection.value.configPath;
+  if (!String(raw ?? "").trim()) return { warn: true };
+  if (kind === "exe") return { good: status.exeExists, bad: !status.exeExists };
+  return { good: status.configExists, bad: !status.configExists };
+}
+
 function collectChannelTargets(channelId) {
   const seen = new Set();
   const items = [];
@@ -997,7 +1032,7 @@ async function resetDefaultPaths() {
   connection.value.exePath = DEFAULT_EXE_PATH;
   connection.value.configPath = defaultConfigPath();
   connection.value.workDir = DEFAULT_WORK_DIR;
-  appendLog(`已恢复 ${CURRENT_OS === "windows" ? "Windows" : CURRENT_OS === "macos" ? "macOS" : "Unix"} 默认路径。`);
+  appendLog(`已恢复${IS_DEV_LAYOUT ? "开发态" : "正式版"}默认路径。`);
   await saveClientState("保存默认路径");
   await refreshStatus();
 }
@@ -1526,6 +1561,9 @@ listen("tray-stop-bridge", () => {
               </div>
             </label>
           </div>
+          <p class="hint">
+            {{ IS_DEV_LAYOUT ? "开发态默认使用仓库里的 target/release 和 examples 相对路径。" : "正式版默认不预填 CLI 和配置文件路径，请先手动选择本机路径。" }}
+          </p>
           <label>
             <span class="label-row">操作方式 <span class="help-dot" :title="SELECT_HELP.operationMode">?</span></span>
             <select v-model="connection.operationMode">
@@ -1569,9 +1607,9 @@ listen("tray-stop-bridge", () => {
           </div>
 
           <div class="status-grid">
-            <div class="state-card"><span>AgentLink 可执行文件</span><strong :class="{ good: status.exeExists, bad: !status.exeExists }">{{ status.exeExists ? "存在" : "不存在" }}</strong></div>
+            <div class="state-card"><span>AgentLink 可执行文件</span><strong :class="pathStateClass('exe')">{{ pathStateLabel('exe') }}</strong></div>
             <div class="state-card"><span>Bridge 运行</span><strong :class="{ good: bridgeRuntime.running, bad: !bridgeRuntime.running }">{{ bridgeRuntime.running ? `PID: ${bridgeRuntime.pid}` : "未启动" }}</strong></div>
-            <div class="state-card"><span>config</span><strong :class="{ good: status.configExists, bad: !status.configExists }">{{ status.configExists ? "存在" : "不存在" }}</strong></div>
+            <div class="state-card"><span>config</span><strong :class="pathStateClass('config')">{{ pathStateLabel('config') }}</strong></div>
             <div class="state-card"><span>project</span><strong :class="{ good: status.projectConfigured, bad: !status.projectConfigured }">{{ labelStatus(status.connectionStatus) }}</strong></div>
             <div class="state-card"><span>channel</span><strong :class="{ good: status.channelConfigured, bad: !status.channelConfigured }">{{ labelStatus(status.channelStatus) }}</strong></div>
             <div class="state-card"><span>agent 配置</span><strong :class="{ good: status.agentConfigured, bad: !status.agentConfigured }">{{ labelStatus(status.agentStatus) }}</strong></div>

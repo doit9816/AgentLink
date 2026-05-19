@@ -369,6 +369,8 @@ fn inspect_status(options: ClientOptions) -> Result<ClientStatus, String> {
         binding_status: binding_status_text(&options.platform, binding_ready),
         agent_install_status: agent_install_status_text(agent_type, agent_installed),
         summary: status_summary(
+            &options.exe_path,
+            &options.config_path,
             exe_exists,
             config_exists,
             project_configured,
@@ -2619,6 +2621,8 @@ fn agent_install_status_text(agent_type: &str, installed: bool) -> String {
 
 #[allow(clippy::too_many_arguments)]
 fn status_summary(
+    exe_path: &str,
+    config_path: &str,
     exe_exists: bool,
     config_exists: bool,
     project_configured: bool,
@@ -2630,6 +2634,12 @@ fn status_summary(
     platform: &str,
     agent_type: &str,
 ) -> String {
+    if exe_path.trim().is_empty() {
+        return "请先选择 AgentLink CLI 的本机路径。".to_string();
+    }
+    if config_path.trim().is_empty() {
+        return "请先选择或生成配置文件。".to_string();
+    }
     if !exe_exists {
         return "AgentLink 可执行文件不存在，请先确认路径。".to_string();
     }
@@ -2918,19 +2928,50 @@ fn candidate_paths(input: &str) -> Vec<PathBuf> {
     }
 
     let mut paths = vec![input_path.clone()];
-    if let Ok(mut current) = std::env::current_dir() {
-        let dist_suffix = suffix_from_component(&input_path, "dist");
+    let dist_suffix = suffix_from_component(&input_path, "dist");
+
+    for root in candidate_roots() {
+        let mut current = root;
         loop {
-            paths.push(current.join(&input_path));
+            push_candidate(&mut paths, current.join(&input_path));
             if let Some(suffix) = dist_suffix.as_ref() {
-                paths.push(current.join(suffix));
+                push_candidate(&mut paths, current.join(suffix));
             }
             if !current.pop() {
                 break;
             }
         }
     }
+
     paths
+}
+
+fn candidate_roots() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+
+    if let Ok(current) = std::env::current_dir() {
+        push_candidate(&mut roots, current);
+    }
+
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            push_candidate(&mut roots, parent.to_path_buf());
+        }
+    }
+
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    push_candidate(&mut roots, manifest_dir.clone());
+    if let Some(repo_root) = manifest_dir.ancestors().nth(3) {
+        push_candidate(&mut roots, repo_root.to_path_buf());
+    }
+
+    roots
+}
+
+fn push_candidate(paths: &mut Vec<PathBuf>, candidate: PathBuf) {
+    if !paths.iter().any(|path| path == &candidate) {
+        paths.push(candidate);
+    }
 }
 
 fn suffix_from_component(path: &Path, component_name: &str) -> Option<PathBuf> {
