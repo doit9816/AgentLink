@@ -1,7 +1,10 @@
 ﻿<script setup>
 import { computed, reactive, ref, watch } from "vue";
+import { getVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { relaunch } from "@tauri-apps/plugin-process";
+import { check } from "@tauri-apps/plugin-updater";
 
 const CHANNELS = [
   {
@@ -410,6 +413,22 @@ const bridgeRuntime = reactive({
   pid: null,
   status: "not running"
 });
+const updatePreferences = reactive({
+  autoCheckUpdates: true,
+  lastUpdateCheckAt: "",
+  lastUpdateError: ""
+});
+const updateStatus = reactive({
+  appVersion: "",
+  checked: false,
+  checking: false,
+  installing: false,
+  installed: false,
+  downloaded: 0,
+  total: 0,
+  available: null,
+  error: ""
+});
 
 const connection = computed(() => {
   return state.connections.find((item) => item.id === activeConnectionId.value) ?? state.connections[0];
@@ -427,6 +446,18 @@ const activeTargetKey = computed(() => targetKey(activeTarget.value));
 const channelTargetOptions = computed(() => collectChannelTargets(connection.value.selectedChannel));
 const activeTargetLock = computed(() => targetLock(activeTargetKey.value));
 const canStartBridge = computed(() => !bridgeRuntime.running && !operationRunning.value && !activeTargetLock.value);
+const updateProgressPercent = computed(() => {
+  if (!updateStatus.total) return 0;
+  return Math.min(100, Math.round((updateStatus.downloaded / updateStatus.total) * 100));
+});
+const updateStateText = computed(() => {
+  if (updateStatus.installing) return "正在下载并安装";
+  if (updateStatus.installed) return "更新已安装，重启后生效";
+  if (updateStatus.available) return `发现新版本 ${updateStatus.available.version}`;
+  if (updateStatus.error) return "检查更新失败";
+  if (updateStatus.checked) return "已是最新版本";
+  return "尚未检查";
+});
 const currentTest = computed(() => connection.value.test ?? { messageType: "text", content: "" });
 const canScan = computed(() => Boolean(currentChannel.value.scan));
 const canDirectSendTest = computed(() => DIRECT_SEND_CHANNELS.has(connection.value.selectedChannel));
@@ -788,7 +819,8 @@ function dismissToast(id) {
 function clientStatePayload() {
   return {
     activeConnectionId: activeConnectionId.value,
-    connections: JSON.parse(JSON.stringify(state.connections))
+    connections: JSON.parse(JSON.stringify(state.connections)),
+    updatePreferences: JSON.parse(JSON.stringify(updatePreferences))
   };
 }
 
@@ -864,6 +896,13 @@ async function loadClientState() {
         ...saved.connections.map((item, index) => normalizeConnection(item, index))
       );
       activeConnectionId.value = saved.activeConnectionId;
+      if (saved.updatePreferences) {
+        Object.assign(updatePreferences, {
+          autoCheckUpdates: saved.updatePreferences.autoCheckUpdates ?? true,
+          lastUpdateCheckAt: saved.updatePreferences.lastUpdateCheckAt || "",
+          lastUpdateError: saved.updatePreferences.lastUpdateError || ""
+        });
+      }
       appendLog(`已从 SQLite 加载 ${saved.connections.length} 个连接。`);
     } else {
       appendLog("SQLite 暂无连接数据，使用默认连接。");
@@ -874,6 +913,10 @@ async function loadClientState() {
   } finally {
     clientStateLoaded.value = true;
     await refreshStatus();
+    await loadAppVersion();
+    window.setTimeout(() => {
+      maybeAutoCheckForUpdate();
+    }, 3500);
   }
 }
 
@@ -985,6 +1028,117 @@ async function refreshBridgeRuntime() {
     bridgeRuntime.pid = null;
     bridgeRuntime.status = `状态未知：${error}`;
   }
+}
+
+async function loadAppVersion() {
+  try {
+    updateStatus.appVersion = await getVersion();
+  } catch (error) {
+    updateStatus.appVersion = "";
+    appendLog(`读取桌面端版本失败：${error}`);
+  }
+}
+
+function updateCheckFinished(error = "") {
+  updateStatus.checked = true;
+  updatePreferences.lastUpdateCheckAt = new Date().toISOString();
+  updatePreferences.lastUpdateError = error;
+  updateStatus.error = error;
+  saveClientState("保存升级状态").catch((saveError) => appendLog(`保存升级状态失败：${saveError}`));
+}
+
+async function checkForUpdates(manual = true) {
+  if (updateStatus.checking || updateStatus.installing) return updateStatus.available;
+  updateStatus.checking = true;
+  updateStatus.error = "";
+  try {
+    const update = await check({ timeout: 15000 });
+    updateStatus.available = update;
+    updateStatus.installed = false;
+    updateStatus.downloaded = 0;
+    updateStatus.total = 0;
+    updateCheckFinished("");
+    if (manual) {
+      notify(update ? "success" : "warning", update ? "发现新版本" : "已是最新版本", update ? `版本 ${update.version}` : "当前桌面端无需更新。");
+    } else if (update) {
+      notify("warning", "发现新版本", `版本 ${update.version}`);
+    }
+    return update;
+  } catch (error) {
+    const message = String(error);
+    updateStatus.available = null;
+    updateCheckFinished(message);
+    if (manual) {
+      notify("error", "检查更新失败", message);
+    }
+    return null;
+  } finally {
+    updateStatus.checking = false;
+  }
+}
+
+function maybeAutoCheckForUpdate() {
+  if (!updatePreferences.autoCheckUpdates || updateStatus.checked) return;
+  checkForUpdates(false).catch((error) => appendLog(`自动检查更新失败：${error}`));
+}
+
+async function installAvailableUpdate() {
+  if (!updateStatus.available || updateStatus.installing) return;
+  await refreshBridgeRuntime();
+  if (bridgeRuntime.running) {
+    const confirmed = window.confirm("AgentLink Bridge 正在运行。安装更新前需要停止 Bridge，是否现在停止并继续安装？");
+    if (!confirmed) {
+      notify("warning", "已延后安装", "停止 Bridge 后可继续安装更新。");
+      return;
+    }
+    await stopBridge();
+    await refreshBridgeRuntime();
+    if (bridgeRuntime.running) {
+      notify("error", "无法安装更新", "Bridge 仍在运行，请先停止后重试。");
+      return;
+    }
+  }
+
+  updateStatus.installing = true;
+  updateStatus.downloaded = 0;
+  updateStatus.total = 0;
+  updateStatus.error = "";
+  try {
+    let totalBytes = 0;
+    await updateStatus.available.downloadAndInstall((event) => {
+      if (event.event === "Started") {
+        totalBytes = event.data.contentLength || 0;
+        updateStatus.downloaded = 0;
+        updateStatus.total = totalBytes;
+      } else if (event.event === "Progress") {
+        updateStatus.downloaded += event.data.chunkLength || 0;
+      } else if (event.event === "Finished") {
+        updateStatus.downloaded = totalBytes || updateStatus.downloaded;
+      }
+    });
+    updateStatus.installed = true;
+    notify("success", "更新已安装", "请重启桌面端让新版本生效。");
+  } catch (error) {
+    updateStatus.error = String(error);
+    updatePreferences.lastUpdateError = updateStatus.error;
+    notify("error", "安装更新失败", updateStatus.error);
+    saveClientState("保存升级失败状态").catch((saveError) => appendLog(`保存升级失败状态失败：${saveError}`));
+  } finally {
+    updateStatus.installing = false;
+  }
+}
+
+async function relaunchDesktop() {
+  try {
+    await relaunch();
+  } catch (error) {
+    notify("error", "重启失败", error);
+  }
+}
+
+function toggleAutoUpdateChecks() {
+  updatePreferences.autoCheckUpdates = !updatePreferences.autoCheckUpdates;
+  saveClientState("保存升级偏好").catch((error) => appendLog(`保存升级偏好失败：${error}`));
 }
 
 function saveConfig(label = "保存配置") {
@@ -1234,6 +1388,7 @@ watch(
 
 watch(() => state.connections, persistSoon, { deep: true });
 watch(activeConnectionId, persistSoon);
+watch(() => updatePreferences.autoCheckUpdates, persistSoon);
 
 loadClientState();
 appendLog("客户端已就绪：可以创建多个连接，并分别选择 Channel 与 Agent。");
@@ -1384,6 +1539,48 @@ listen("tray-stop-bridge", () => {
             <div class="state-card"><span>agent 配置</span><strong :class="{ good: status.agentConfigured, bad: !status.agentConfigured }">{{ labelStatus(status.agentStatus) }}</strong></div>
             <div class="state-card"><span>agent 安装</span><strong :class="{ good: status.agentInstalled, bad: !status.agentInstalled }">{{ labelStatus(status.agentInstallStatus) }}</strong></div>
             <div class="state-card"><span>绑定</span><strong :class="{ good: status.bindingReady, bad: !status.bindingReady }">{{ labelStatus(status.bindingStatus) }}</strong></div>
+          </div>
+        </div>
+
+        <div class="panel update-panel">
+          <div class="section-head">
+            <div>
+              <h2>软件更新</h2>
+              <p>使用 stable 更新通道。发现新版本后需要手动确认下载和安装。</p>
+            </div>
+            <button type="button" class="small-button" :disabled="updateStatus.checking || updateStatus.installing" @click="checkForUpdates(true)">
+              {{ updateStatus.checking ? "检查中" : "检查更新" }}
+            </button>
+          </div>
+
+          <div class="status-grid update-grid">
+            <div class="state-card"><span>当前版本</span><strong>{{ updateStatus.appVersion || "-" }}</strong></div>
+            <div class="state-card">
+              <span>更新状态</span>
+              <strong :class="{ good: updateStatus.available || updateStatus.installed, bad: updateStatus.error }">{{ updateStateText }}</strong>
+            </div>
+            <div class="state-card"><span>最新版本</span><strong>{{ updateStatus.available?.version || "-" }}</strong></div>
+            <div class="state-card"><span>发布时间</span><strong>{{ updateStatus.available?.date || "-" }}</strong></div>
+          </div>
+
+          <div v-if="updateStatus.available?.body" class="update-notes">{{ updateStatus.available.body }}</div>
+          <div v-if="updateStatus.error" class="hint warning-hint">{{ updateStatus.error }}</div>
+
+          <div v-if="updateStatus.installing" class="update-progress">
+            <div><span :style="{ width: `${updateProgressPercent || 35}%` }"></span></div>
+            <strong>{{ updateProgressPercent ? `正在下载并安装 ${updateProgressPercent}%` : "正在下载并安装" }}</strong>
+          </div>
+
+          <label class="checkbox-row">
+            <input type="checkbox" :checked="updatePreferences.autoCheckUpdates" @change="toggleAutoUpdateChecks" />
+            启动后自动检查更新
+          </label>
+          <p v-if="updatePreferences.lastUpdateCheckAt">上次检查：{{ updatePreferences.lastUpdateCheckAt }}</p>
+
+          <div class="action-row">
+            <button type="button" :disabled="!updateStatus.available || updateStatus.installing || updateStatus.installed" @click="installAvailableUpdate">下载并安装</button>
+            <button type="button" class="secondary" :disabled="!updateStatus.error || updateStatus.checking || updateStatus.installing" @click="checkForUpdates(true)">重试</button>
+            <button type="button" class="secondary" :disabled="!updateStatus.installed" @click="relaunchDesktop">重启生效</button>
           </div>
         </div>
       </section>

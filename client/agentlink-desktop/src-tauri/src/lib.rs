@@ -1,4 +1,4 @@
-﻿use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::{BTreeMap, HashMap};
 use std::io::{BufRead, BufReader};
@@ -221,11 +221,38 @@ struct ClientConnectionState {
     test: serde_json::Value,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdatePreferences {
+    #[serde(default = "default_auto_check_updates")]
+    auto_check_updates: bool,
+    #[serde(default)]
+    last_update_check_at: Option<String>,
+    #[serde(default)]
+    last_update_error: Option<String>,
+}
+
+impl Default for UpdatePreferences {
+    fn default() -> Self {
+        Self {
+            auto_check_updates: true,
+            last_update_check_at: None,
+            last_update_error: None,
+        }
+    }
+}
+
+fn default_auto_check_updates() -> bool {
+    true
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ClientDatabaseState {
     active_connection_id: String,
     connections: Vec<ClientConnectionState>,
+    #[serde(default)]
+    update_preferences: UpdatePreferences,
 }
 
 #[derive(Debug, Deserialize)]
@@ -538,16 +565,12 @@ fn pick_path_native(options: PickPathOptions) -> Result<Option<String>, String> 
 
     let dialog = rfd::FileDialog::new().set_directory(&current_dir);
     let picked = match options.kind.as_str() {
-        "exe" => dialog
-            .set_title("选择 AgentLink 可执行文件")
-            .pick_file(),
+        "exe" => dialog.set_title("选择 AgentLink 可执行文件").pick_file(),
         "config" => dialog
             .set_title("选择 AgentLink 配置文件")
             .add_filter("TOML", &["toml"])
             .pick_file(),
-        "folder" => dialog
-            .set_title("选择项目工作目录")
-            .pick_folder(),
+        "folder" => dialog.set_title("选择项目工作目录").pick_folder(),
         other => return Err(format!("unsupported path picker kind: {other}")),
     };
 
@@ -629,6 +652,7 @@ fn load_client_state(app: tauri::AppHandle) -> Result<Option<ClientDatabaseState
             |row| row.get(0),
         )
         .ok();
+    let update_preferences = load_update_preferences(&db);
 
     let mut stmt = db
         .prepare("select data from connections order by updated_at desc, id asc")
@@ -656,6 +680,7 @@ fn load_client_state(app: tauri::AppHandle) -> Result<Option<ClientDatabaseState
     Ok(Some(ClientDatabaseState {
         active_connection_id,
         connections,
+        update_preferences,
     }))
 }
 
@@ -667,6 +692,14 @@ fn save_client_state(app: tauri::AppHandle, state: ClientDatabaseState) -> Resul
         "insert into settings(key, value) values('active_connection_id', ?1)
          on conflict(key) do update set value = excluded.value",
         [&state.active_connection_id],
+    )
+    .map_err(|err| err.to_string())?;
+    let update_preferences =
+        serde_json::to_string(&state.update_preferences).map_err(|err| err.to_string())?;
+    tx.execute(
+        "insert into settings(key, value) values('update_preferences', ?1)
+         on conflict(key) do update set value = excluded.value",
+        [&update_preferences],
     )
     .map_err(|err| err.to_string())?;
 
@@ -696,6 +729,18 @@ fn save_client_state(app: tauri::AppHandle, state: ClientDatabaseState) -> Resul
     }
     tx.commit().map_err(|err| err.to_string())?;
     Ok("client state saved to sqlite".to_string())
+}
+
+fn load_update_preferences(db: &rusqlite::Connection) -> UpdatePreferences {
+    let raw: Option<String> = db
+        .query_row(
+            "select value from settings where key = 'update_preferences'",
+            [],
+            |row| row.get(0),
+        )
+        .ok();
+    raw.and_then(|value| serde_json::from_str(&value).ok())
+        .unwrap_or_default()
 }
 
 #[tauri::command]
@@ -1005,17 +1050,20 @@ async fn send_weixin_direct_message(
 ) -> Result<TestMessageResponse, String> {
     let fields = request.options.channel_fields.as_ref();
     let token = required_field(fields, "token")?;
-    let api_base =
-        field(fields, "api_base").unwrap_or_else(|| DEFAULT_WEIXIN_API_BASE.to_string());
+    let api_base = field(fields, "api_base").unwrap_or_else(|| DEFAULT_WEIXIN_API_BASE.to_string());
     let to_user_id = required_target_receive_id(&request.target)?;
-    let reply_ctx = opt_target(&request.target.reply_context)
-        .ok_or_else(|| "微信测试发送需要先从微信给机器人发一条消息，用发现到的目标缓存 context_token。".to_string())?;
+    let reply_ctx = opt_target(&request.target.reply_context).ok_or_else(|| {
+        "微信测试发送需要先从微信给机器人发一条消息，用发现到的目标缓存 context_token。".to_string()
+    })?;
     let reply_value = serde_json::from_str::<serde_json::Value>(&reply_ctx)
         .map_err(|err| format!("微信 replyContext 解析失败：{err}"))?;
     let context_token = json_string(&reply_value, "context_token").unwrap_or_default();
     let client_id = json_string(&reply_value, "client_id").unwrap_or_default();
     if context_token.is_empty() {
-        return Err("微信目标缺少 context_token。请先从微信给机器人发一条新消息，再刷新发现目标。".to_string());
+        return Err(
+            "微信目标缺少 context_token。请先从微信给机器人发一条新消息，再刷新发现目标。"
+                .to_string(),
+        );
     }
     let body = json!({
         "msg": {
@@ -1051,7 +1099,10 @@ async fn send_weixin_direct_message(
             body,
         })
     } else {
-        Err(format!("Weixin HTTP {} from `{url}`: {body}", status.as_u16()))
+        Err(format!(
+            "Weixin HTTP {} from `{url}`: {body}",
+            status.as_u16()
+        ))
     }
 }
 
@@ -1117,8 +1168,7 @@ fn required_target_receive_id(target: &ChannelTargetRequest) -> Result<String, S
 
 fn weixin_uin_header() -> String {
     use base64::Engine;
-    base64::engine::general_purpose::STANDARD
-        .encode(rand::random::<u32>().to_string())
+    base64::engine::general_purpose::STANDARD.encode(rand::random::<u32>().to_string())
 }
 
 fn config_data_dir(options: &ClientOptions) -> PathBuf {
@@ -2076,8 +2126,7 @@ async fn poll_weixin_qr_setup(
 
     while std::time::Instant::now() < timeout_at {
         poll_count += 1;
-        let poll =
-            weixin_poll_qr_status(&client, &api_base, &qr_key, route_tag.as_deref()).await;
+        let poll = weixin_poll_qr_status(&client, &api_base, &qr_key, route_tag.as_deref()).await;
         let poll = match poll {
             Ok(poll) => poll,
             Err(err) => {
@@ -2098,7 +2147,11 @@ async fn poll_weixin_qr_setup(
             "expired" => {
                 refresh_count += 1;
                 if refresh_count > max_refresh {
-                    finish_qr_setup(&status, false, "二维码已多次过期，请重新扫码绑定。".to_string());
+                    finish_qr_setup(
+                        &status,
+                        false,
+                        "二维码已多次过期，请重新扫码绑定。".to_string(),
+                    );
                     return;
                 }
                 match weixin_fetch_bot_qr(&client, &api_base, &bot_type, route_tag.as_deref()).await
@@ -2166,7 +2219,10 @@ async fn poll_weixin_qr_setup(
                 if !poll.ilink_user_id.trim().is_empty()
                     && non_empty(fields.get("allow_from")).is_none()
                 {
-                    fields.insert("allow_from".to_string(), poll.ilink_user_id.trim().to_string());
+                    fields.insert(
+                        "allow_from".to_string(),
+                        poll.ilink_user_id.trim().to_string(),
+                    );
                 }
                 next_options.channel_fields = Some(fields);
                 match save_config(next_options) {
@@ -2972,6 +3028,8 @@ fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
 pub fn run() {
     tauri::Builder::default()
         .manage(BridgeState::default())
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             setup_tray(app)?;
             Ok(())

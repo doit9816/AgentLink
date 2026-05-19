@@ -329,8 +329,13 @@ button:disabled {
 }
 
 .status-panel,
-.test-panel {
+.test-panel,
+.update-panel {
   grid-column: span 1;
+}
+
+.update-panel {
+  grid-column: span 2;
 }
 
 .connection-list {
@@ -375,6 +380,65 @@ button:disabled {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
   margin: 14px 0;
+}
+
+.update-grid {
+  margin-bottom: 10px;
+}
+
+.update-notes {
+  max-height: 130px;
+  overflow: auto;
+  margin: 8px 0 12px;
+  border: 1px solid #d6dee8;
+  border-radius: 6px;
+  background: #f8fafc;
+  color: #405065;
+  padding: 10px 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.update-progress {
+  display: grid;
+  gap: 7px;
+  margin: 10px 0 12px;
+}
+
+.update-progress div {
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #dbe3ec;
+}
+
+.update-progress span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: #1f6feb;
+}
+
+.update-progress strong {
+  color: #405065;
+  font-size: 12px;
+}
+
+.checkbox-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: fit-content;
+  margin-bottom: 8px;
+  cursor: pointer;
+}
+
+.checkbox-row input {
+  width: 16px;
+  min-height: 16px;
+  margin: 0;
 }
 
 .summary-card,
@@ -696,6 +760,10 @@ pre {
   .summary-grid,
   .status-grid {
     grid-template-columns: 1fr;
+  }
+
+  .update-panel {
+    grid-column: span 1;
   }
 
   .qr-box,
