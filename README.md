@@ -180,8 +180,11 @@ git push origin v0.2.0
   - **Windows**: `.zip`, `.msi`, `.exe` (NSIS)
   - **macOS**: `.tar.gz`, `.dmg`
   - **Linux**: `.tar.gz`, `.AppImage`, `.deb`
-- Publishes the Windows desktop updater feed to the `updater-feed` branch:
-  - `https://raw.githubusercontent.com/doit9816/AgentLink/updater-feed/windows/latest.json`
+- Publishes desktop updater feeds for Windows, Linux, and macOS to the `updater-feed` branch:
+  - `https://raw.githubusercontent.com/doit9816/AgentLink/updater-feed/windows/x86_64/latest.json`
+  - `https://raw.githubusercontent.com/doit9816/AgentLink/updater-feed/linux/x86_64/latest.json`
+  - `https://raw.githubusercontent.com/doit9816/AgentLink/updater-feed/darwin/x86_64/latest.json`
+  - `https://raw.githubusercontent.com/doit9816/AgentLink/updater-feed/darwin/aarch64/latest.json`
 
 ### Release Artifacts
 
@@ -204,10 +207,10 @@ The package script builds the core bridge, the desktop client, and the Windows r
 The desktop client's Tauri updater reads from a public feed in the `updater-feed` branch instead of `releases/latest/download/latest.json`:
 
 ```text
-https://raw.githubusercontent.com/doit9816/AgentLink/updater-feed/windows/latest.json
+https://raw.githubusercontent.com/doit9816/AgentLink/updater-feed/{{target}}/{{arch}}/latest.json
 ```
 
-Tagged Windows releases stage `latest.json`, the referenced installer, and the matching `.sig` file before publishing them to the `updater-feed` branch.
+Tagged releases stage per-platform `latest.json`, the referenced installer/archive, and the matching `.sig` file before publishing them to the `updater-feed` branch.
 
 ## 🏗️ Architecture
 
