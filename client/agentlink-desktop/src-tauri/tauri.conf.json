@@ -37,9 +37,9 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDhBMkU2RDBEMDZEQkJGM0QKUldROXY5c0dEVzB1aXJWNk0wS0pzRDZ3ditCVkw5ZS9aeEh1QUJSaEhhVSt0NmRQTDNyNHg5U04K",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDlFMTU1QTgxNTZFMEQ5OTUKUldTVjJlQldnVm9Wbm45aG1JT0hFOHluanZDeXZxdnlONXpsMGRyR0llOW1ZNHA5bGhBeUN0K0oK",
       "endpoints": [
-        "https://github.com/doit9816/AgentLink/releases/latest/download/latest.json"
+        "https://raw.githubusercontent.com/doit9816/AgentLink/updater-feed/windows/latest.json"
       ],
       "windows": {
         "installMode": "passive"

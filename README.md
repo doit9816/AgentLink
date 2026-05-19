@@ -166,10 +166,8 @@ bash ./scripts/package-unix.sh <version> <target-name>
 
 Our CI/CD pipeline automatically builds and publishes releases:
 
-**On Push to `main`**
-- Triggers build for Windows, macOS, and Linux
-- Updates `latest` prerelease tag
-- Uploads all platform artifacts
+**On manual dispatch**
+- Triggers the cross-platform desktop build workflow without changing the published updater feed
 
 **On Version Tag (`v*`)**
 ```bash
@@ -182,6 +180,8 @@ git push origin v0.2.0
   - **Windows**: `.zip`, `.msi`, `.exe` (NSIS)
   - **macOS**: `.tar.gz`, `.dmg`
   - **Linux**: `.tar.gz`, `.AppImage`, `.deb`
+- Publishes the Windows desktop updater feed to the `updater-feed` branch:
+  - `https://raw.githubusercontent.com/doit9816/AgentLink/updater-feed/windows/latest.json`
 
 ### Release Artifacts
 
@@ -198,6 +198,16 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\auto-package.ps1
 ```
 
 The package script builds the core bridge, the desktop client, and the Windows release archive.
+
+## Desktop Updater Feed
+
+The desktop client's Tauri updater reads from a public feed in the `updater-feed` branch instead of `releases/latest/download/latest.json`:
+
+```text
+https://raw.githubusercontent.com/doit9816/AgentLink/updater-feed/windows/latest.json
+```
+
+Tagged Windows releases stage `latest.json`, the referenced installer, and the matching `.sig` file before publishing them to the `updater-feed` branch.
 
 ## 🏗️ Architecture
 

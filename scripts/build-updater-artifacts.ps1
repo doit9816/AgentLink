@@ -1,6 +1,8 @@
 param(
     [string]$NodeDir = "F:\nvm\v18.20.8",
     [string]$CargoTargetDir = "H:\agentlink-desktop-target",
+    [string]$FeedDir = "",
+    [string]$BaseUrl = "",
     [switch]$SkipInstall,
     [switch]$UseGlobalNode
 )
@@ -53,4 +55,15 @@ finally {
 & powershell -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "validate-updater-artifacts.ps1") -BundleDir $BundleDir
 if ($LASTEXITCODE -ne 0) {
     throw "validate-updater-artifacts.ps1 failed with exit code $LASTEXITCODE"
+}
+
+if ($FeedDir -or $BaseUrl) {
+    if (-not $FeedDir -or -not $BaseUrl) {
+        throw "FeedDir and BaseUrl must be provided together when staging a public updater feed."
+    }
+
+    & powershell -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "stage-updater-feed.ps1") -BundleDir $BundleDir -FeedDir $FeedDir -BaseUrl $BaseUrl
+    if ($LASTEXITCODE -ne 0) {
+        throw "stage-updater-feed.ps1 failed with exit code $LASTEXITCODE"
+    }
 }

@@ -95,3 +95,57 @@ jobs:
           releaseDraft: false
           prerelease: false
           updaterJsonPreferNsis: true
+
+      - name: Stage public updater feed
+        if: matrix.platform == 'windows-latest' && startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: >
+          powershell -ExecutionPolicy Bypass -File .\scripts\stage-updater-feed.ps1
+          -BundleDir .\client\agentlink-desktop\src-tauri\target\release\bundle
+          -FeedDir .\client\agentlink-desktop\src-tauri\target\updater-feed
+          -BaseUrl https://raw.githubusercontent.com/${{ github.repository }}/updater-feed/windows
+
+      - name: Publish updater feed branch
+        if: matrix.platform == 'windows-latest' && startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          $branch = "updater-feed"
+          $feedSource = Resolve-Path ".\client\agentlink-desktop\src-tauri\target\updater-feed"
+          $worktreeDir = Join-Path $env:RUNNER_TEMP $branch
+
+          if (Test-Path -LiteralPath $worktreeDir) {
+            Remove-Item -LiteralPath $worktreeDir -Recurse -Force
+          }
+
+          git fetch origin $branch
+          if ($LASTEXITCODE -eq 0) {
+            git worktree add --force $worktreeDir "origin/$branch"
+          }
+          else {
+            git worktree add --detach $worktreeDir
+            Push-Location $worktreeDir
+            git checkout --orphan $branch
+            Pop-Location
+          }
+
+          Get-ChildItem -LiteralPath $worktreeDir -Force |
+            Where-Object { $_.Name -ne ".git" } |
+            Remove-Item -Recurse -Force
+
+          $destinationDir = Join-Path $worktreeDir "windows"
+          New-Item -ItemType Directory -Force -Path $destinationDir | Out-Null
+          Copy-Item -LiteralPath (Join-Path $feedSource "*") -Destination $destinationDir -Recurse -Force
+
+          Push-Location $worktreeDir
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add --all
+          git diff --cached --quiet
+          if ($LASTEXITCODE -ne 0) {
+            git commit -m "Publish updater feed for $env:GITHUB_REF_NAME"
+            git push origin HEAD:$branch
+          }
+          else {
+            Write-Host "Updater feed branch already up to date."
+          }
+          Pop-Location

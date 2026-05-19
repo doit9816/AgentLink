@@ -418,12 +418,26 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\auto-package.ps1
 - `-CoreTargetDir /path/to/core-target`：指定核心程序构建目录。
 - `-DesktopTargetDir /path/to/desktop-target`：指定桌面端构建目录。
 
-推送到 GitHub 后，`.github/workflows/release.yml` 会在 `main`、PR、`v*` tag 或手动触发时自动构建 Windows、macOS、Linux 产物。
+推送版本标签或手动触发后，`.github/workflows/release.yml` 会构建 Windows、macOS、Linux 产物。
 
-- 推到 `main`：自动更新 GitHub Release 里的 `latest` 预发布版本，并上传各平台归档和桌面安装包。
+- 手动触发：执行跨平台桌面构建，但不更新公开升级源。
 - 推 `v0.1.0` 这类 tag：自动发布对应正式 Release，并上传各平台归档和桌面安装包。
+- 推 `v0.1.0` 这类 tag 时，Windows 桌面端 updater 还会把公开升级源推送到 `updater-feed` 分支：
+  - `https://raw.githubusercontent.com/doit9816/AgentLink/updater-feed/windows/latest.json`
 
 当前本地一键打包脚本 `scripts/auto-package.ps1` 仍然是 Windows 优先；`macOS/Linux` 的自动构建现在由 GitHub Actions 负责。
+
+桌面端“软件更新”现在使用 `updater-feed` 分支上的公开静态升级源，不再依赖 GitHub `releases/latest/download/latest.json`：
+
+```text
+https://raw.githubusercontent.com/doit9816/AgentLink/updater-feed/windows/latest.json
+```
+
+维护发布时需要同时满足：
+
+- GitHub Actions secrets 中配置 `TAURI_SIGNING_PRIVATE_KEY` 和 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
+- 仓库保持公开可访问，以便客户端读取 `raw.githubusercontent.com` 上的升级源
+- `scripts/stage-updater-feed.ps1` 成功把 `latest.json`、Windows 安装包和 `.sig` 整理到公开 feed 目录
 
 发布正式版本示例：
 
