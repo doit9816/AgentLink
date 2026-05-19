@@ -5,6 +5,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check } from "@tauri-apps/plugin-updater";
+import appLogo from "../src-tauri/icons/icon.png";
 
 const CHANNELS = [
   {
@@ -274,7 +275,8 @@ const CURRENT_OS = (() => {
 
 const DEFAULT_WORK_DIR = ".";
 const DEFAULT_EXE_PATH = CURRENT_OS === "windows" ? "target/release/agentlink.exe" : "target/release/agentlink";
-const defaultConfigPath = (index = 1) => `examples/agentlink.${index}.toml`;
+const DEFAULT_CONFIG_PATH = "examples/agentlink.all.toml";
+const defaultConfigPath = () => DEFAULT_CONFIG_PATH;
 const DIRECT_SEND_CHANNELS = new Set(["http", "feishu", "lark", "telegram", "dingtalk", "slack", "discord", "line", "weixin"]);
 
 function defaultsFor(fields) {
@@ -336,7 +338,7 @@ function createConnection(index = 1) {
     id: `conn-${Date.now()}-${index}`,
     name: index === 1 ? "默认连接" : `连接 ${index}`,
     exePath: DEFAULT_EXE_PATH,
-    configPath: defaultConfigPath(index),
+    configPath: defaultConfigPath(),
     project: index === 1 ? "demo" : `demo-${index}`,
     workDir: DEFAULT_WORK_DIR,
     operationMode: "api",
@@ -830,7 +832,7 @@ function looksLikeWindowsPath(value) {
   return /^[a-z]:[\\/]/i.test(String(value ?? "").trim());
 }
 
-function migrateLegacyPath(path, index = 1) {
+function migrateLegacyPath(path) {
   const value = String(path ?? "").trim();
   if (!value) return "";
   let next = value
@@ -841,7 +843,7 @@ function migrateLegacyPath(path, index = 1) {
     .replaceAll("codex-chat-bridge-client.exe", "agentlink-desktop.exe")
     .replaceAll("examples/bridge.", "examples/agentlink.")
     .replaceAll("examples\\bridge.", "examples\\agentlink.")
-    .replace(/examples[\\/]bridge$/i, `examples/agentlink.${index}.toml`);
+    .replace(/examples[\\/]bridge$/i, DEFAULT_CONFIG_PATH);
 
   if (CURRENT_OS !== "windows") {
     next = next
@@ -849,16 +851,16 @@ function migrateLegacyPath(path, index = 1) {
       .replace(/(^|[\\/])agentlink-desktop\.exe$/i, "$1agentlink-desktop");
   }
 
-  if (/dist[\\/]agentlink-v[^\\/]+[\\/]examples[\\/]agentlink\.\d+\.toml$/i.test(next)) {
-    next = defaultConfigPath(index);
+  if (/dist[\\/]agentlink-v[^\\/]+[\\/]examples[\\/]agentlink\.\d+\.toml$/i.test(next) || /examples[\\/]agentlink\.\d+\.toml$/i.test(next)) {
+    next = DEFAULT_CONFIG_PATH;
   }
 
   return next;
 }
 
 function normalizeConnectionPaths(item, index) {
-  item.exePath = migrateLegacyPath(item.exePath, index + 1) || DEFAULT_EXE_PATH;
-  item.configPath = migrateLegacyPath(item.configPath, index + 1) || defaultConfigPath(index + 1);
+  item.exePath = migrateLegacyPath(item.exePath) || DEFAULT_EXE_PATH;
+  item.configPath = migrateLegacyPath(item.configPath) || defaultConfigPath();
   if (!String(item.workDir ?? "").trim() || (CURRENT_OS !== "windows" && looksLikeWindowsPath(item.workDir))) {
     item.workDir = DEFAULT_WORK_DIR;
   }
@@ -992,9 +994,8 @@ async function pickPath(kind) {
 }
 
 async function resetDefaultPaths() {
-  const index = Math.max(1, state.connections.findIndex((item) => item.id === connection.value.id) + 1);
   connection.value.exePath = DEFAULT_EXE_PATH;
-  connection.value.configPath = defaultConfigPath(index);
+  connection.value.configPath = defaultConfigPath();
   connection.value.workDir = DEFAULT_WORK_DIR;
   appendLog(`已恢复 ${CURRENT_OS === "windows" ? "Windows" : CURRENT_OS === "macos" ? "macOS" : "Unix"} 默认路径。`);
   await saveClientState("保存默认路径");
@@ -1880,14 +1881,51 @@ listen("tray-stop-bridge", () => {
     <section v-show="activeTab === 'about'" class="tab-panel">
       <section class="panel about-panel">
         <div class="section-head">
-          <div>
-            <h2>AgentLink</h2>
-            <p>多 Agent 聊天连接器</p>
+          <div class="about-head">
+            <img :src="appLogo" alt="AgentLink logo" class="about-logo" />
+            <div>
+              <h2>AgentLink</h2>
+              <p>多 Agent 聊天连接器</p>
+            </div>
           </div>
-          <span class="pill">v0.1.0</span>
+          <span class="pill">v{{ updateStatus.appVersion || "0.1.0" }}</span>
         </div>
 
         <div class="about-grid">
+          <section class="about-update-section">
+            <h2>版本与更新</h2>
+            <div class="about-stats">
+              <div class="about-stat">
+                <span>当前版本</span>
+                <strong>v{{ updateStatus.appVersion || "0.1.0" }}</strong>
+              </div>
+              <div class="about-stat">
+                <span>更新状态</span>
+                <strong :class="{ good: updateStatus.available || updateStatus.installed, bad: updateStatus.error }">{{ updateStateText }}</strong>
+              </div>
+              <div class="about-stat">
+                <span>最新版本</span>
+                <strong>{{ updateStatus.available?.version || "-" }}</strong>
+              </div>
+              <div class="about-stat">
+                <span>上次检查</span>
+                <strong>{{ updatePreferences.lastUpdateCheckAt || "-" }}</strong>
+              </div>
+            </div>
+            <div v-if="updateStatus.available?.body" class="update-notes">{{ updateStatus.available.body }}</div>
+            <div v-if="updateStatus.error" class="hint warning-hint">{{ updateStatus.error }}</div>
+            <div v-if="updateStatus.installing" class="update-progress">
+              <div><span :style="{ width: `${updateProgressPercent || 35}%` }"></span></div>
+              <strong>{{ updateProgressPercent ? `正在下载并安装 ${updateProgressPercent}%` : "正在下载并安装" }}</strong>
+            </div>
+            <div class="action-row">
+              <button type="button" class="small-button" :disabled="updateStatus.checking || updateStatus.installing" @click="checkForUpdates(true)">
+                {{ updateStatus.checking ? "检查中" : "检查更新" }}
+              </button>
+              <button type="button" class="small-button" :disabled="!updateStatus.available || updateStatus.installing || updateStatus.installed" @click="installAvailableUpdate">下载并安装</button>
+              <button type="button" class="small-button" :disabled="!updateStatus.installed" @click="relaunchDesktop">重启生效</button>
+            </div>
+          </section>
           <section>
             <h2>定位</h2>
             <p>AgentLink 用来把飞书、钉钉、微信、Telegram 等聊天渠道连接到 Codex、Claude Code、Gemini、Cursor Agent 等编程 Agent，并在本地统一管理渠道密钥、接收目标、Agent 会话和运行状态。</p>
