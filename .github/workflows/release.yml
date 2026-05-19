@@ -182,7 +182,12 @@ jobs:
             $destinationDir = Join-Path $destinationDir $arch
 
             New-Item -ItemType Directory -Force -Path $destinationDir | Out-Null
-            Copy-Item -LiteralPath (Join-Path $_.FullName "*") -Destination $destinationDir -Recurse -Force
+            $artifactItems = Get-ChildItem -LiteralPath $_.FullName -Force
+            if (-not $artifactItems) {
+              throw "Updater artifact directory is empty: $($_.FullName)"
+            }
+
+            $artifactItems | Copy-Item -Destination $destinationDir -Recurse -Force
           }
 
           Push-Location $worktreeDir
