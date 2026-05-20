@@ -5,9 +5,11 @@ use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, WindowEvent};
+use tauri_plugin_updater::UpdaterExt;
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -21,12 +23,19 @@ struct BridgeState {
     qr_sessions: Mutex<HashMap<String, Arc<Mutex<QrSetupStatus>>>>,
 }
 
+#[derive(Default)]
+struct DesktopUpdateState {
+    pending: Mutex<Option<tauri_plugin_updater::Update>>,
+}
+
 const ACCOUNTS_FEISHU_BASE: &str = "https://accounts.feishu.cn";
 const ACCOUNTS_LARK_BASE: &str = "https://accounts.larksuite.com";
 const OPEN_FEISHU_BASE: &str = "https://open.feishu.cn";
 const OPEN_LARK_BASE: &str = "https://open.larksuite.com";
 const DEFAULT_WEIXIN_API_BASE: &str = "https://ilinkai.weixin.qq.com";
 const DEFAULT_WEIXIN_BOT_TYPE: &str = "3";
+const DESKTOP_UPDATER_ENDPOINT: &str =
+    "https://raw.githubusercontent.com/doit9816/AgentLink/updater-feed/{{target}}/{{arch}}/latest.json";
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -66,6 +75,14 @@ struct ClientStatus {
     binding_status: String,
     agent_install_status: String,
     summary: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AvailableUpdatePayload {
+    version: String,
+    date: Option<String>,
+    body: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -454,6 +471,91 @@ fn read_bridge_logs(max_lines: Option<usize>) -> Result<BridgeLogs, String> {
         stderr,
         combined,
     })
+}
+
+#[tauri::command]
+async fn check_for_updates_bust(
+    app: AppHandle,
+    state: tauri::State<'_, DesktopUpdateState>,
+) -> Result<Option<AvailableUpdatePayload>, String> {
+    let update = build_cache_busting_updater(&app)?
+        .check()
+        .await
+        .map_err(|err| err.to_string())?;
+
+    let mut pending = state.pending.lock().map_err(|err| err.to_string())?;
+    if let Some(update) = update {
+        let payload = available_update_payload(&update);
+        *pending = Some(update);
+        Ok(Some(payload))
+    } else {
+        *pending = None;
+        Ok(None)
+    }
+}
+
+#[tauri::command]
+async fn install_available_update_bust(
+    app: AppHandle,
+    state: tauri::State<'_, DesktopUpdateState>,
+) -> Result<String, String> {
+    let update = state
+        .pending
+        .lock()
+        .map_err(|err| err.to_string())?
+        .clone()
+        .ok_or_else(|| "没有可安装的更新，请先检查更新。".to_string())?;
+
+    let _ = app.emit(
+        "update-download-event",
+        json!({
+            "event": "Started",
+            "data": {
+                "contentLength": null
+            }
+        }),
+    );
+
+    let progress_app = app.clone();
+    let finish_app = app.clone();
+    let last_total = Arc::new(Mutex::new(None::<u64>));
+    let last_total_progress = last_total.clone();
+    let last_total_finish = last_total.clone();
+    update
+        .download_and_install(
+            move |chunk_length, content_length| {
+                if let Ok(mut guard) = last_total_progress.lock() {
+                    *guard = content_length;
+                }
+                let _ = progress_app.emit(
+                    "update-download-event",
+                    json!({
+                        "event": "Progress",
+                        "data": {
+                            "chunkLength": chunk_length,
+                            "contentLength": content_length
+                        }
+                    }),
+                );
+            },
+            move || {
+                let content_length = last_total_finish.lock().ok().and_then(|guard| *guard);
+                let _ = finish_app.emit(
+                    "update-download-event",
+                    json!({
+                        "event": "Finished",
+                        "data": {
+                            "contentLength": content_length
+                        }
+                    }),
+                );
+            },
+        )
+        .await
+        .map_err(|err| err.to_string())?;
+
+    *state.pending.lock().map_err(|err| err.to_string())? = None;
+    Ok("更新已下载并安装。".to_string())
 }
 
 #[tauri::command]
@@ -2619,6 +2721,42 @@ fn agent_install_status_text(agent_type: &str, installed: bool) -> String {
     }
 }
 
+fn build_cache_busting_updater(app: &AppHandle) -> Result<tauri_plugin_updater::Updater, String> {
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|err| err.to_string())?
+        .as_millis();
+    let nonce = rand::random::<u64>();
+    let separator = if DESKTOP_UPDATER_ENDPOINT.contains('?') {
+        '&'
+    } else {
+        '?'
+    };
+    let endpoint = format!("{DESKTOP_UPDATER_ENDPOINT}{separator}ts={ts}&nonce={nonce}");
+    let endpoint = reqwest::Url::parse(&endpoint).map_err(|err| err.to_string())?;
+
+    let builder = app
+        .updater_builder()
+        .endpoints(vec![endpoint])
+        .map_err(|err| err.to_string())?
+        .header("Cache-Control", "no-cache, no-store, max-age=0")
+        .map_err(|err| err.to_string())?
+        .header("Pragma", "no-cache")
+        .map_err(|err| err.to_string())?
+        .header("Expires", "0")
+        .map_err(|err| err.to_string())?;
+
+    builder.build().map_err(|err| err.to_string())
+}
+
+fn available_update_payload(update: &tauri_plugin_updater::Update) -> AvailableUpdatePayload {
+    AvailableUpdatePayload {
+        version: update.version.clone(),
+        date: update.date.map(|date| date.to_string()),
+        body: update.body.clone(),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn status_summary(
     exe_path: &str,
@@ -3076,6 +3214,7 @@ fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
 pub fn run() {
     tauri::Builder::default()
         .manage(BridgeState::default())
+        .manage(DesktopUpdateState::default())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
@@ -3098,6 +3237,8 @@ pub fn run() {
             hide_to_tray,
             show_main_window_cmd,
             read_bridge_logs,
+            check_for_updates_bust,
+            install_available_update_bust,
             send_test_message,
             send_channel_message,
             discover_channel_targets,

@@ -1,10 +1,9 @@
 ﻿<script setup>
-import { computed, reactive, ref, shallowRef, watch } from "vue";
+import { computed, reactive, ref, watch } from "vue";
 import { getVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { relaunch } from "@tauri-apps/plugin-process";
-import { check } from "@tauri-apps/plugin-updater";
 import appLogo from "../src-tauri/icons/icon.png";
 
 const CHANNELS = [
@@ -442,7 +441,6 @@ const updatePreferences = reactive({
   lastUpdateCheckAt: "",
   lastUpdateError: ""
 });
-const availableUpdate = shallowRef(null);
 const updateStatus = reactive({
   appVersion: "",
   checked: false,
@@ -1091,8 +1089,7 @@ async function checkForUpdates(manual = true) {
   updateStatus.checking = true;
   updateStatus.error = "";
   try {
-    const update = await check({ timeout: 15000 });
-    availableUpdate.value = update;
+    const update = await invoke("check_for_updates_bust");
     updateStatus.available = update
       ? {
           version: update.version,
@@ -1116,7 +1113,6 @@ async function checkForUpdates(manual = true) {
     return update;
   } catch (error) {
     const message = String(error);
-    availableUpdate.value = null;
     updateStatus.available = null;
     updateCheckFinished(message);
     if (manual) {
@@ -1141,7 +1137,7 @@ function maybeAutoCheckForUpdate() {
 }
 
 async function installAvailableUpdate({ auto = false } = {}) {
-  if (!availableUpdate.value || updateStatus.installing) return;
+  if (!updateStatus.available || updateStatus.installing) return;
   await refreshBridgeRuntime();
   if (bridgeRuntime.running) {
     if (auto) {
@@ -1171,18 +1167,7 @@ async function installAvailableUpdate({ auto = false } = {}) {
   updateStatus.total = 0;
   updateStatus.error = "";
   try {
-    let totalBytes = 0;
-    await availableUpdate.value.downloadAndInstall((event) => {
-      if (event.event === "Started") {
-        totalBytes = event.data.contentLength || 0;
-        updateStatus.downloaded = 0;
-        updateStatus.total = totalBytes;
-      } else if (event.event === "Progress") {
-        updateStatus.downloaded += event.data.chunkLength || 0;
-      } else if (event.event === "Finished") {
-        updateStatus.downloaded = totalBytes || updateStatus.downloaded;
-      }
-    });
+    await invoke("install_available_update_bust");
     updateStatus.installed = true;
     notify("success", "更新已安装", auto ? "更新已自动安装，请重启桌面端让新版本生效。" : "请重启桌面端让新版本生效。");
   } catch (error) {
@@ -1474,6 +1459,18 @@ listen("tray-start-bridge", () => {
 });
 listen("tray-stop-bridge", () => {
   if (bridgeRuntime.running) stopBridge();
+});
+listen("update-download-event", (event) => {
+  const payload = event.payload || {};
+  if (payload.event === "Started") {
+    updateStatus.downloaded = 0;
+    updateStatus.total = payload.data?.contentLength || 0;
+  } else if (payload.event === "Progress") {
+    if (payload.data?.contentLength) updateStatus.total = payload.data.contentLength;
+    updateStatus.downloaded += payload.data?.chunkLength || 0;
+  } else if (payload.event === "Finished") {
+    updateStatus.downloaded = updateStatus.total || updateStatus.downloaded;
+  }
 });
 </script>
 
