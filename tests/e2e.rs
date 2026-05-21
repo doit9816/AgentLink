@@ -37,6 +37,13 @@ async fn mock_platform_mock_agent_final_reply_e2e() {
         .unwrap()
         .expect("session should persist");
     assert!(session.agent_session_id.starts_with("mock-session-"));
+
+    let targets = store.list_targets("test", "mock", 10).unwrap();
+    assert_eq!(targets.len(), 1);
+    assert_eq!(targets[0].session_key, "chat-1");
+    assert_eq!(targets[0].user_id, "user-1");
+    assert_eq!(targets[0].reply_ctx, "reply-1");
+    assert_eq!(targets[0].content_preview, "hello");
 }
 
 #[tokio::test]

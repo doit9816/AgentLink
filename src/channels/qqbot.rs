@@ -1,5 +1,5 @@
-use crate::channels::support::*;
 use crate::channels::support::ws::{resolve_platform_token, run_simple_ws};
+use crate::channels::support::*;
 
 pub use crate::channels::support::{qqbot_config_from_options, PollPlatformConfig, QqBotPlatform};
 

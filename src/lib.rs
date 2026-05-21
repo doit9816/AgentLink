@@ -1,8 +1,8 @@
-pub mod core;
-pub mod engine;
 pub mod agents;
 pub mod app;
 pub mod channels;
+pub mod core;
+pub mod engine;
 pub mod setup;
 pub mod store;
 pub mod testing;

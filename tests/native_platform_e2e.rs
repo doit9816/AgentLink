@@ -62,6 +62,7 @@ async fn feishu_webhook_text_round_trip_e2e() {
     );
     engine.start().await.unwrap();
     let addr = platform.local_addr().await.unwrap();
+    wait_for_json_health(format!("http://{addr}/feishu/healthz")).await;
 
     let response = reqwest::Client::new()
         .post(format!("http://{addr}/feishu/webhook"))
@@ -117,6 +118,7 @@ async fn feishu_url_verification_returns_challenge() {
     );
     engine.start().await.unwrap();
     let addr = platform.local_addr().await.unwrap();
+    wait_for_json_health(format!("http://{addr}/feishu/healthz")).await;
 
     let value: serde_json::Value = reqwest::Client::new()
         .post(format!("http://{addr}/feishu/webhook"))
@@ -131,6 +133,55 @@ async fn feishu_url_verification_returns_challenge() {
         .await
         .unwrap();
     assert_eq!(value["challenge"], "challenge-code");
+    engine.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn feishu_webhook_verification_token_rejects_invalid_request() {
+    let platform = FeishuPlatform::new(FeishuPlatformConfig {
+        name: "feishu".to_string(),
+        listen: "127.0.0.1:0".to_string(),
+        callback_path: "/feishu/webhook".to_string(),
+        verification_token: Some("expected-token".to_string()),
+        dry_run: true,
+        ..FeishuPlatformConfig::default()
+    });
+    let engine = Engine::new(
+        "test",
+        Arc::new(MockAgent::new()),
+        vec![Arc::clone(&platform) as Arc<dyn Platform>],
+        SessionStore::in_memory().unwrap(),
+    );
+    engine.start().await.unwrap();
+    let addr = platform.local_addr().await.unwrap();
+    wait_for_json_health(format!("http://{addr}/feishu/healthz")).await;
+
+    let response = reqwest::Client::new()
+        .post(format!("http://{addr}/feishu/webhook"))
+        .json(&json!({
+            "schema": "2.0",
+            "header": {
+                "event_type": "im.message.receive_v1"
+            },
+            "event": {
+                "sender": {
+                    "sender_id": {
+                        "open_id": "ou_user_1"
+                    }
+                },
+                "message": {
+                    "message_id": "om_msg_1",
+                    "chat_id": "oc_chat_1",
+                    "chat_type": "group",
+                    "message_type": "text",
+                    "content": "{\"text\":\"hello feishu\"}"
+                }
+            }
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     engine.stop().await.unwrap();
 }
 
@@ -160,10 +211,12 @@ async fn feishu_websocket_text_round_trip_e2e() {
                 }
             }),
         )
-        .route("/ws", get(feishu_test_ws));
+        .route("/ws", get(feishu_test_ws))
+        .route("/healthz", get(|| async { Json(json!({ "ok": true })) }));
     tokio::spawn(async move {
         let _ = axum::serve(listener, app).await;
     });
+    wait_for_json_health(format!("http://{addr}/healthz")).await;
 
     let platform = FeishuPlatform::new(FeishuPlatformConfig {
         name: "feishu".to_string(),
@@ -287,6 +340,7 @@ async fn dingtalk_webhook_text_round_trip_e2e() {
     );
     engine.start().await.unwrap();
     let addr = platform.local_addr().await.unwrap();
+    wait_for_json_health(format!("http://{addr}/dingtalk/healthz")).await;
 
     let response = reqwest::Client::new()
         .post(format!("http://{addr}/dingtalk/webhook"))
@@ -313,4 +367,15 @@ async fn dingtalk_webhook_text_round_trip_e2e() {
     assert_eq!(outbound.sender_staff_id, "staff_1");
     assert_eq!(outbound.content, "mock: hello dingtalk");
     engine.stop().await.unwrap();
+}
+
+async fn wait_for_json_health(url: String) {
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    for _ in 0..40 {
+        match client.get(&url).send().await {
+            Ok(response) if response.status() == StatusCode::OK => return,
+            _ => tokio::time::sleep(Duration::from_millis(50)).await,
+        }
+    }
+    panic!("health endpoint did not become ready: {url}");
 }

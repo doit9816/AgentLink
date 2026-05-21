@@ -1,12 +1,12 @@
 use aes::cipher::{block_padding::Pkcs7, BlockEncryptMut, KeyIvInit};
-use agentlink::core::Platform;
-use agentlink::mock::MockAgent;
 use agentlink::channels::line::{LinePlatform, LinePlatformConfig};
 use agentlink::channels::max::{max_config_from_options, MaxPlatform};
 use agentlink::channels::qqbot::{qqbot_config_from_options, QqBotPlatform};
 use agentlink::channels::wecom::{WeComPlatform, WeComPlatformConfig};
 use agentlink::channels::weibo::{weibo_config_from_options, WeiboPlatform};
 use agentlink::channels::weixin::{weixin_config_from_options, WeixinPlatform};
+use agentlink::core::Platform;
+use agentlink::mock::MockAgent;
 use agentlink::{Engine, SessionStore};
 use axum::extract::ws::{Message as AxumWsMessage, WebSocketUpgrade};
 use axum::extract::Query;

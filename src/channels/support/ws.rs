@@ -64,7 +64,9 @@ async fn run_simple_ws_once<P: SimpleWsPlatform + 'static>(
     if identify {
         write
             .send(WsMessage::Text(
-                json!({ "op": 2, "d": { "token": token }}).to_string().into(),
+                json!({ "op": 2, "d": { "token": token }})
+                    .to_string()
+                    .into(),
             ))
             .await?;
     }

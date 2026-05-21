@@ -1,0 +1,39 @@
+schema: spec-driven
+
+context: |
+  Project: AgentLink, a Rust multi-programming-agent chat connector.
+  Architecture: Platform -> Engine -> AgentSession -> programming Agent.
+  Primary v1 path: Feishu/Lark + Codex must be practically usable first.
+  Desktop client: Tauri + Vue, with source in client/agentlink-desktop/src/App.vue.
+  Client tabs must remain: 连接, Channel, Agent.
+  Channel must keep the send-message-test area and support multiple discovered targets.
+  Target discovery is inbound-message-first: users send a real chat message to the bot,
+  Platform parses it, and the bridge persists a target record in SQLite before the
+  desktop client lets users select it.
+  Feishu/Lark defaults to connection_mode = "websocket"; local use should not prefer
+  public webhooks. Webhooks are fallback or platform-mandated only.
+  Do not write real credentials to examples, docs, specs, or tests.
+  Do not put external reference-project notes into user-facing documentation.
+  Prefer existing Rust Platform / Agent / AgentSession / Engine traits and local
+  patterns over introducing parallel abstractions.
+  Build outputs should use H:\agentlink-target and H:\agentlink-desktop-target rather
+  than writing large artifacts to the D: drive target directory.
+
+rules:
+  proposal:
+    - Keep proposals focused on one coherent AgentLink change.
+    - Include Non-goals when a request could be confused with packaging, public docs, or adding unrelated channels.
+    - List impacted areas such as src/, client/agentlink-desktop/, scripts/, tests/, docs/, and config shape.
+  specs:
+    - Use MUST/SHALL wording for observable behavior.
+    - Prefer modifying existing specs before adding broad new capability specs.
+    - Keep channel-specific requirements under platform capability specs.
+  design:
+    - Name the existing traits, commands, storage tables, and UI files that will be touched.
+    - Explain how inbound reply context and discovered targets are preserved.
+    - Include migration or compatibility notes when config or SQLite schema changes.
+  tasks:
+    - Include formatting and validation tasks appropriate to changed files.
+    - Rust changes should include cargo fmt and cargo check with CARGO_TARGET_DIR=H:\agentlink-target.
+    - Frontend changes should include npm run build:ui, using the configured Node path if needed.
+    - Do not include packaging tasks unless packaging is explicitly requested.
