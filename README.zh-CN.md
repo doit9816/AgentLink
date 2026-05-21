@@ -422,24 +422,20 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\auto-package.ps1
 
 - 手动触发：执行跨平台桌面构建，但不更新公开升级源。
 - 推 `v0.1.0` 这类 tag：自动发布对应正式 Release，并上传各平台归档和桌面安装包。
-- 推 `v0.1.0` 这类 tag 时，桌面端 updater 还会把各平台公开升级源提交到 `main` 分支的 `updater-feed/` 目录：
-  - `https://raw.githubusercontent.com/doit9816/AgentLink/main/updater-feed/windows/x86_64/latest.json`
-  - `https://raw.githubusercontent.com/doit9816/AgentLink/main/updater-feed/linux/x86_64/latest.json`
-  - `https://raw.githubusercontent.com/doit9816/AgentLink/main/updater-feed/darwin/x86_64/latest.json`
-  - `https://raw.githubusercontent.com/doit9816/AgentLink/main/updater-feed/darwin/aarch64/latest.json`
+- 推 `v0.1.0` 这类 tag 时，`tauri-action` 会把各平台安装包和 `latest.json` 上传到 GitHub Release，供桌面端自动更新使用
 
 当前本地一键打包脚本 `scripts/auto-package.ps1` 仍然是 Windows 优先；`macOS/Linux` 的自动构建现在由 GitHub Actions 负责。
 
-桌面端“软件更新”现在使用 `main` 分支 `updater-feed/` 目录下的公开静态升级源，不再依赖 GitHub `releases/latest/download/latest.json`：
+桌面端“软件更新”直接读取 GitHub Release 上的 `latest.json`，安装包从同一 Release 的附件下载：
 
 ```text
-https://raw.githubusercontent.com/doit9816/AgentLink/main/updater-feed/{{target}}/{{arch}}/latest.json
+https://github.com/doit9816/AgentLink/releases/latest/download/latest.json
 ```
 
 维护发布时需要同时满足：
 
 - GitHub Actions secrets 中配置 `TAURI_SIGNING_PRIVATE_KEY` 和 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
-- 仓库保持公开可访问，以便客户端读取 `raw.githubusercontent.com` 上的升级源
+- `tauri-action` 为每个 tag 上传带签名的安装包及 `latest.json`
 - `scripts/stage-updater-feed.ps1` 成功把各平台的 `latest.json`、安装包或归档以及 `.sig` 整理到公开 feed 目录
 
 发布正式版本示例：
