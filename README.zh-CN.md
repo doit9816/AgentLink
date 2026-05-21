@@ -422,18 +422,18 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\auto-package.ps1
 
 - 手动触发：执行跨平台桌面构建，但不更新公开升级源。
 - 推 `v0.1.0` 这类 tag：自动发布对应正式 Release，并上传各平台归档和桌面安装包。
-- 推 `v0.1.0` 这类 tag 时，桌面端 updater 还会把各平台公开升级源推送到 `updater-feed` 分支：
-  - `https://raw.githubusercontent.com/doit9816/AgentLink/updater-feed/windows/x86_64/latest.json`
-  - `https://raw.githubusercontent.com/doit9816/AgentLink/updater-feed/linux/x86_64/latest.json`
-  - `https://raw.githubusercontent.com/doit9816/AgentLink/updater-feed/darwin/x86_64/latest.json`
-  - `https://raw.githubusercontent.com/doit9816/AgentLink/updater-feed/darwin/aarch64/latest.json`
+- 推 `v0.1.0` 这类 tag 时，桌面端 updater 还会把各平台公开升级源提交到 `main` 分支的 `updater-feed/` 目录：
+  - `https://raw.githubusercontent.com/doit9816/AgentLink/main/updater-feed/windows/x86_64/latest.json`
+  - `https://raw.githubusercontent.com/doit9816/AgentLink/main/updater-feed/linux/x86_64/latest.json`
+  - `https://raw.githubusercontent.com/doit9816/AgentLink/main/updater-feed/darwin/x86_64/latest.json`
+  - `https://raw.githubusercontent.com/doit9816/AgentLink/main/updater-feed/darwin/aarch64/latest.json`
 
 当前本地一键打包脚本 `scripts/auto-package.ps1` 仍然是 Windows 优先；`macOS/Linux` 的自动构建现在由 GitHub Actions 负责。
 
-桌面端“软件更新”现在使用 `updater-feed` 分支上的公开静态升级源，不再依赖 GitHub `releases/latest/download/latest.json`：
+桌面端“软件更新”现在使用 `main` 分支 `updater-feed/` 目录下的公开静态升级源，不再依赖 GitHub `releases/latest/download/latest.json`：
 
 ```text
-https://raw.githubusercontent.com/doit9816/AgentLink/updater-feed/{{target}}/{{arch}}/latest.json
+https://raw.githubusercontent.com/doit9816/AgentLink/main/updater-feed/{{target}}/{{arch}}/latest.json
 ```
 
 维护发布时需要同时满足：

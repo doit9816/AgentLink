@@ -452,6 +452,12 @@ const updateStatus = reactive({
   available: null,
   error: ""
 });
+const updateDialog = reactive({
+  visible: false,
+  version: "",
+  date: "",
+  body: ""
+});
 
 const connection = computed(() => {
   return state.connections.find((item) => item.id === activeConnectionId.value) ?? state.connections[0];
@@ -1084,44 +1090,64 @@ function updateCheckFinished(error = "") {
   saveClientState("保存升级状态").catch((saveError) => appendLog(`保存升级状态失败：${saveError}`));
 }
 
+function applyAvailableUpdate(update) {
+  updateStatus.available = {
+    version: update.version,
+    date: update.date,
+    body: update.body
+  };
+  updateStatus.installed = false;
+  updateStatus.downloaded = 0;
+  updateStatus.total = 0;
+}
+
+function openUpdateDialog(update) {
+  updateDialog.visible = true;
+  updateDialog.version = update.version;
+  updateDialog.date = update.date || "";
+  updateDialog.body = update.body || "";
+}
+
+function closeUpdateDialog() {
+  updateDialog.visible = false;
+}
+
 async function checkForUpdates(manual = true) {
   if (updateStatus.checking || updateStatus.installing) return updateStatus.available;
   updateStatus.checking = true;
   updateStatus.error = "";
   try {
     const update = await invoke("check_for_updates_bust");
-    updateStatus.available = update
-      ? {
-          version: update.version,
-          date: update.date,
-          body: update.body
-        }
-      : null;
-    updateStatus.installed = false;
-    updateStatus.downloaded = 0;
-    updateStatus.total = 0;
+    if (update) {
+      applyAvailableUpdate(update);
+      updateCheckFinished("");
+      openUpdateDialog(update);
+      return update;
+    }
+
+    updateStatus.available = null;
     updateCheckFinished("");
     if (manual) {
-      notify(update ? "success" : "warning", update ? "发现新版本" : "已是最新版本", update ? `版本 ${update.version}` : "当前桌面端无需更新。");
-    } else if (update) {
-      notify(
-        updatePreferences.autoInstallUpdates ? "success" : "warning",
-        updatePreferences.autoInstallUpdates ? "发现新版本，准备自动安装" : "发现新版本",
-        `版本 ${update.version}`
-      );
+      notify("warning", "已是最新版本", "当前桌面端无需更新。");
     }
-    return update;
+    return null;
   } catch (error) {
     const message = String(error);
     updateStatus.available = null;
     updateCheckFinished(message);
     if (manual) {
       notify("error", "检查更新失败", message);
+    } else {
+      appendLog(`自动检查更新失败：${message}`);
     }
     return null;
   } finally {
     updateStatus.checking = false;
   }
+}
+
+async function installFromUpdateDialog() {
+  await installAvailableUpdate();
 }
 
 function maybeAutoCheckForUpdate() {
@@ -1169,6 +1195,7 @@ async function installAvailableUpdate({ auto = false } = {}) {
   try {
     await invoke("install_available_update_bust");
     updateStatus.installed = true;
+    closeUpdateDialog();
     notify("success", "更新已安装", auto ? "更新已自动安装，请重启桌面端让新版本生效。" : "请重启桌面端让新版本生效。");
   } catch (error) {
     updateStatus.error = String(error);
@@ -1476,6 +1503,23 @@ listen("update-download-event", (event) => {
 
 <template>
   <main class="shell">
+    <div v-if="updateDialog.visible" class="update-dialog-overlay" role="dialog" aria-modal="true" aria-labelledby="update-dialog-title">
+      <div class="update-dialog">
+        <h3 id="update-dialog-title">发现新版本</h3>
+        <p class="update-dialog-version">v{{ updateDialog.version }} 已发布，当前版本 v{{ updateStatus.appVersion || "-" }}。</p>
+        <p v-if="updateDialog.date" class="update-dialog-meta">发布时间：{{ updateDialog.date }}</p>
+        <div v-if="updateDialog.body" class="update-notes">{{ updateDialog.body }}</div>
+        <div v-if="updateStatus.installing" class="update-progress">
+          <div><span :style="{ width: `${updateProgressPercent || 35}%` }"></span></div>
+          <strong>{{ updateProgressPercent ? `正在下载并安装 ${updateProgressPercent}%` : "正在下载并安装" }}</strong>
+        </div>
+        <div class="action-row">
+          <button type="button" :disabled="updateStatus.installing" @click="installFromUpdateDialog">立即更新</button>
+          <button type="button" class="secondary" :disabled="updateStatus.installing" @click="closeUpdateDialog">稍后</button>
+        </div>
+      </div>
+    </div>
+
     <div class="toast-stack" aria-live="polite" aria-atomic="false">
       <div v-for="toast in toasts" :key="toast.id" class="toast" :class="toast.type">
         <div>
@@ -1615,51 +1659,6 @@ listen("update-download-event", (event) => {
           </div>
         </div>
 
-        <div class="panel update-panel">
-          <div class="section-head">
-            <div>
-              <h2>软件更新</h2>
-              <p>使用 stable 更新通道。可自动检查更新，并在允许时自动下载安装。</p>
-            </div>
-            <button type="button" class="small-button" :disabled="updateStatus.checking || updateStatus.installing" @click="checkForUpdates(true)">
-              {{ updateStatus.checking ? "检查中" : "检查更新" }}
-            </button>
-          </div>
-
-          <div class="status-grid update-grid">
-            <div class="state-card"><span>当前版本</span><strong>{{ updateStatus.appVersion || "-" }}</strong></div>
-            <div class="state-card">
-              <span>更新状态</span>
-              <strong :class="{ good: updateStatus.available || updateStatus.installed, bad: updateStatus.error }">{{ updateStateText }}</strong>
-            </div>
-            <div class="state-card"><span>最新版本</span><strong>{{ updateStatus.available?.version || "-" }}</strong></div>
-            <div class="state-card"><span>发布时间</span><strong>{{ updateStatus.available?.date || "-" }}</strong></div>
-          </div>
-
-          <div v-if="updateStatus.available?.body" class="update-notes">{{ updateStatus.available.body }}</div>
-          <div v-if="updateStatus.error" class="hint warning-hint">{{ updateStatus.error }}</div>
-
-          <div v-if="updateStatus.installing" class="update-progress">
-            <div><span :style="{ width: `${updateProgressPercent || 35}%` }"></span></div>
-            <strong>{{ updateProgressPercent ? `正在下载并安装 ${updateProgressPercent}%` : "正在下载并安装" }}</strong>
-          </div>
-
-          <label class="checkbox-row">
-            <input type="checkbox" :checked="updatePreferences.autoCheckUpdates" @change="toggleAutoUpdateChecks" />
-            启动后自动检查更新
-          </label>
-          <label class="checkbox-row">
-            <input type="checkbox" :checked="updatePreferences.autoInstallUpdates" @change="toggleAutoInstallUpdates" />
-            发现新版本后自动下载安装
-          </label>
-          <p v-if="updatePreferences.lastUpdateCheckAt">上次检查：{{ updatePreferences.lastUpdateCheckAt }}</p>
-
-          <div class="action-row">
-            <button type="button" :disabled="!updateStatus.available || updateStatus.installing || updateStatus.installed" @click="installAvailableUpdate">下载并安装</button>
-            <button type="button" class="secondary" :disabled="!updateStatus.error || updateStatus.checking || updateStatus.installing" @click="checkForUpdates(true)">重试</button>
-            <button type="button" class="secondary" :disabled="!updateStatus.installed" @click="relaunchDesktop">重启生效</button>
-          </div>
-        </div>
       </section>
     </section>
 
@@ -1953,11 +1952,20 @@ listen("update-download-event", (event) => {
               <div><span :style="{ width: `${updateProgressPercent || 35}%` }"></span></div>
               <strong>{{ updateProgressPercent ? `正在下载并安装 ${updateProgressPercent}%` : "正在下载并安装" }}</strong>
             </div>
+            <label class="checkbox-row">
+              <input type="checkbox" :checked="updatePreferences.autoCheckUpdates" @change="toggleAutoUpdateChecks" />
+              启动后自动检查更新
+            </label>
+            <label class="checkbox-row">
+              <input type="checkbox" :checked="updatePreferences.autoInstallUpdates" @change="toggleAutoInstallUpdates" />
+              发现新版本后自动下载安装
+            </label>
             <div class="action-row">
               <button type="button" class="small-button" :disabled="updateStatus.checking || updateStatus.installing" @click="checkForUpdates(true)">
                 {{ updateStatus.checking ? "检查中" : "检查更新" }}
               </button>
               <button type="button" class="small-button" :disabled="!updateStatus.available || updateStatus.installing || updateStatus.installed" @click="installAvailableUpdate">下载并安装</button>
+              <button type="button" class="small-button" :disabled="!updateStatus.error || updateStatus.checking || updateStatus.installing" @click="checkForUpdates(true)">重试</button>
               <button type="button" class="small-button" :disabled="!updateStatus.installed" @click="relaunchDesktop">重启生效</button>
             </div>
           </section>

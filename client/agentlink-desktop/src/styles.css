@@ -126,6 +126,44 @@ p {
   line-height: 1;
 }
 
+.update-dialog-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1100;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(15, 23, 42, 0.42);
+}
+
+.update-dialog {
+  width: min(460px, calc(100vw - 48px));
+  border: 1px solid #cad5e1;
+  border-radius: 10px;
+  background: white;
+  box-shadow: 0 18px 48px rgba(15, 23, 42, 0.22);
+  padding: 20px 22px;
+}
+
+.update-dialog h3 {
+  margin: 0;
+  font-size: 18px;
+  color: #17202a;
+}
+
+.update-dialog-version {
+  margin-top: 10px;
+  color: #26384c;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.update-dialog-meta {
+  margin-top: 6px;
+  color: #657184;
+  font-size: 13px;
+}
+
 .tabs {
   gap: 8px;
   margin-bottom: 14px;
