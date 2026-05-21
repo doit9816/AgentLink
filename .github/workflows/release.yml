@@ -135,7 +135,7 @@ jobs:
           ./scripts/stage-updater-feed.ps1
           -BundleDir ./${{ matrix.bundleDir }}
           -FeedDir ./client/agentlink-desktop/src-tauri/target/updater-feed
-          -BaseUrl https://raw.githubusercontent.com/${{ github.repository }}/updater-feed/${{ matrix.updaterTarget }}/${{ matrix.updaterArch }}
+          -BaseUrl https://raw.githubusercontent.com/${{ github.repository }}/main/updater-feed/${{ matrix.updaterTarget }}/${{ matrix.updaterArch }}
           -PlatformKey ${{ matrix.updaterPlatformKey }}
           -Version ${{ env.RELEASE_VERSION }}
 
@@ -152,8 +152,11 @@ jobs:
     needs: build-desktop
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout main
         uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
 
       - name: Download updater feed artifacts
         uses: actions/download-artifact@v4
@@ -161,61 +164,22 @@ jobs:
           path: updater-feed-artifacts
           pattern: updater-feed-*
 
-      - name: Publish updater feed branch
+      - name: Publish updater feed to main
         shell: pwsh
         run: |
-          $branch = "updater-feed"
-          $artifactsRoot = Resolve-Path ".\updater-feed-artifacts"
-          $worktreeDir = Join-Path $env:RUNNER_TEMP $branch
+          ./scripts/publish-updater-feed-main.ps1 `
+            -ArtifactsRoot ./updater-feed-artifacts `
+            -FeedRoot ./updater-feed `
+            -TagName $env:GITHUB_REF_NAME
 
-          if (Test-Path -LiteralPath $worktreeDir) {
-            Remove-Item -LiteralPath $worktreeDir -Recurse -Force
-          }
-
-          git fetch origin $branch
-          if ($LASTEXITCODE -eq 0) {
-            git worktree add --force $worktreeDir "origin/$branch"
-          }
-          else {
-            git worktree add --detach $worktreeDir
-            Push-Location $worktreeDir
-            git checkout --orphan $branch
-            Pop-Location
-          }
-
-          Get-ChildItem -LiteralPath $worktreeDir -Force |
-            Where-Object { $_.Name -ne ".git" } |
-            Remove-Item -Recurse -Force
-
-          Get-ChildItem -LiteralPath $artifactsRoot -Directory | ForEach-Object {
-            if ($_.Name -notmatch '^updater-feed-(.+)-(.+)$') {
-              throw "Unexpected updater artifact directory name: $($_.Name)"
-            }
-
-            $target = $Matches[1]
-            $arch = $Matches[2]
-            $destinationDir = Join-Path $worktreeDir $target
-            $destinationDir = Join-Path $destinationDir $arch
-
-            New-Item -ItemType Directory -Force -Path $destinationDir | Out-Null
-            $artifactItems = Get-ChildItem -LiteralPath $_.FullName -Force
-            if (-not $artifactItems) {
-              throw "Updater artifact directory is empty: $($_.FullName)"
-            }
-
-            $artifactItems | Copy-Item -Destination $destinationDir -Recurse -Force
-          }
-
-          Push-Location $worktreeDir
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add --all
+          git add updater-feed
           git diff --cached --quiet
           if ($LASTEXITCODE -ne 0) {
             git commit -m "Publish updater feed for $env:GITHUB_REF_NAME"
-            git push origin HEAD:$branch
+            git push origin HEAD:main
           }
           else {
-            Write-Host "Updater feed branch already up to date."
+            Write-Host "Updater feed on main already up to date."
           }
-          Pop-Location

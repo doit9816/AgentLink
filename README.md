@@ -180,11 +180,11 @@ git push origin v0.2.0
   - **Windows**: `.zip`, `.msi`, `.exe` (NSIS)
   - **macOS**: `.tar.gz`, `.dmg`
   - **Linux**: `.tar.gz`, `.AppImage`, `.deb`
-- Publishes desktop updater feeds for Windows, Linux, and macOS to the `updater-feed` branch:
-  - `https://raw.githubusercontent.com/doit9816/AgentLink/updater-feed/windows/x86_64/latest.json`
-  - `https://raw.githubusercontent.com/doit9816/AgentLink/updater-feed/linux/x86_64/latest.json`
-  - `https://raw.githubusercontent.com/doit9816/AgentLink/updater-feed/darwin/x86_64/latest.json`
-  - `https://raw.githubusercontent.com/doit9816/AgentLink/updater-feed/darwin/aarch64/latest.json`
+- Publishes desktop updater feeds for Windows, Linux, and macOS to `main` under `updater-feed/`:
+  - `https://raw.githubusercontent.com/doit9816/AgentLink/main/updater-feed/windows/x86_64/latest.json`
+  - `https://raw.githubusercontent.com/doit9816/AgentLink/main/updater-feed/linux/x86_64/latest.json`
+  - `https://raw.githubusercontent.com/doit9816/AgentLink/main/updater-feed/darwin/x86_64/latest.json`
+  - `https://raw.githubusercontent.com/doit9816/AgentLink/main/updater-feed/darwin/aarch64/latest.json`
 
 ### Release Artifacts
 
@@ -204,13 +204,13 @@ The package script builds the core bridge, the desktop client, and the Windows r
 
 ## Desktop Updater Feed
 
-The desktop client's Tauri updater reads from a public feed in the `updater-feed` branch instead of `releases/latest/download/latest.json`:
+The desktop client's Tauri updater reads from a public feed on the `main` branch (`updater-feed/`) instead of `releases/latest/download/latest.json`:
 
 ```text
-https://raw.githubusercontent.com/doit9816/AgentLink/updater-feed/{{target}}/{{arch}}/latest.json
+https://raw.githubusercontent.com/doit9816/AgentLink/main/updater-feed/{{target}}/{{arch}}/latest.json
 ```
 
-Tagged releases stage per-platform `latest.json`, the referenced installer/archive, and the matching `.sig` file before publishing them to the `updater-feed` branch.
+Tagged releases stage per-platform `latest.json`, the referenced installer/archive, and the matching `.sig` file before committing them to `main` under `updater-feed/`.
 
 ## 🏗️ Architecture
 
