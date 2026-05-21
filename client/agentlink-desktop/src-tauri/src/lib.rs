@@ -34,10 +34,8 @@ const OPEN_FEISHU_BASE: &str = "https://open.feishu.cn";
 const OPEN_LARK_BASE: &str = "https://open.larksuite.com";
 const DEFAULT_WEIXIN_API_BASE: &str = "https://ilinkai.weixin.qq.com";
 const DEFAULT_WEIXIN_BOT_TYPE: &str = "3";
-const DESKTOP_UPDATER_ENDPOINTS: &[&str] = &[
-    "https://raw.githubusercontent.com/doit9816/AgentLink/main/updater-feed/{{target}}/{{arch}}/latest.json",
-    "https://raw.githubusercontent.com/doit9816/AgentLink/updater-feed/{{target}}/{{arch}}/latest.json",
-];
+const DESKTOP_UPDATER_ENDPOINT: &str =
+    "https://github.com/doit9816/AgentLink/releases/latest/download/latest.json";
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -480,32 +478,20 @@ async fn check_for_updates_bust(
     app: AppHandle,
     state: tauri::State<'_, DesktopUpdateState>,
 ) -> Result<Option<AvailableUpdatePayload>, String> {
-    let mut errors = Vec::new();
+    let update = build_cache_busting_updater(&app)?
+        .check()
+        .await
+        .map_err(|err| err.to_string())?;
 
-    for endpoint_template in DESKTOP_UPDATER_ENDPOINTS {
-        match build_cache_busting_updater(&app, endpoint_template) {
-            Ok(updater) => match updater.check().await {
-                Ok(update) => {
-                    let mut pending = state.pending.lock().map_err(|err| err.to_string())?;
-                    if let Some(update) = update {
-                        let payload = available_update_payload(&update);
-                        *pending = Some(update);
-                        return Ok(Some(payload));
-                    }
-                    *pending = None;
-                    return Ok(None);
-                }
-                Err(err) => errors.push(format!("{endpoint_template}: {err}")),
-            },
-            Err(err) => errors.push(format!("{endpoint_template}: {err}")),
-        }
-    }
-
-    Err(if errors.is_empty() {
-        "无法获取更新信息。".to_string()
+    let mut pending = state.pending.lock().map_err(|err| err.to_string())?;
+    if let Some(update) = update {
+        let payload = available_update_payload(&update);
+        *pending = Some(update);
+        Ok(Some(payload))
     } else {
-        errors.join("; ")
-    })
+        *pending = None;
+        Ok(None)
+    }
 }
 
 #[tauri::command]
@@ -2735,21 +2721,18 @@ fn agent_install_status_text(agent_type: &str, installed: bool) -> String {
     }
 }
 
-fn build_cache_busting_updater(
-    app: &AppHandle,
-    endpoint_template: &str,
-) -> Result<tauri_plugin_updater::Updater, String> {
+fn build_cache_busting_updater(app: &AppHandle) -> Result<tauri_plugin_updater::Updater, String> {
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|err| err.to_string())?
         .as_millis();
     let nonce = rand::random::<u64>();
-    let separator = if endpoint_template.contains('?') {
+    let separator = if DESKTOP_UPDATER_ENDPOINT.contains('?') {
         '&'
     } else {
         '?'
     };
-    let endpoint = format!("{endpoint_template}{separator}ts={ts}&nonce={nonce}");
+    let endpoint = format!("{DESKTOP_UPDATER_ENDPOINT}{separator}ts={ts}&nonce={nonce}");
     let endpoint = reqwest::Url::parse(&endpoint).map_err(|err| err.to_string())?;
 
     let builder = app

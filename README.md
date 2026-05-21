@@ -180,11 +180,7 @@ git push origin v0.2.0
   - **Windows**: `.zip`, `.msi`, `.exe` (NSIS)
   - **macOS**: `.tar.gz`, `.dmg`
   - **Linux**: `.tar.gz`, `.AppImage`, `.deb`
-- Publishes desktop updater feeds for Windows, Linux, and macOS to `main` under `updater-feed/`:
-  - `https://raw.githubusercontent.com/doit9816/AgentLink/main/updater-feed/windows/x86_64/latest.json`
-  - `https://raw.githubusercontent.com/doit9816/AgentLink/main/updater-feed/linux/x86_64/latest.json`
-  - `https://raw.githubusercontent.com/doit9816/AgentLink/main/updater-feed/darwin/x86_64/latest.json`
-  - `https://raw.githubusercontent.com/doit9816/AgentLink/main/updater-feed/darwin/aarch64/latest.json`
+- Publishes signed desktop installers and `latest.json` to GitHub Releases (used by the in-app updater)
 
 ### Release Artifacts
 
@@ -204,13 +200,13 @@ The package script builds the core bridge, the desktop client, and the Windows r
 
 ## Desktop Updater Feed
 
-The desktop client's Tauri updater reads from a public feed on the `main` branch (`updater-feed/`) instead of `releases/latest/download/latest.json`:
+The desktop client's Tauri updater reads `latest.json` from GitHub Releases. Installers are release assets; only metadata is fetched for update checks:
 
 ```text
-https://raw.githubusercontent.com/doit9816/AgentLink/main/updater-feed/{{target}}/{{arch}}/latest.json
+https://github.com/doit9816/AgentLink/releases/latest/download/latest.json
 ```
 
-Tagged releases stage per-platform `latest.json`, the referenced installer/archive, and the matching `.sig` file before committing them to `main` under `updater-feed/`.
+`tauri-action` uploads per-platform signatures and download URLs pointing at the same release's assets.
 
 ## 🏗️ Architecture
 

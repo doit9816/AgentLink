@@ -41,7 +41,7 @@ if (-not $FeedDir) {
 }
 
 if (-not $BaseUrl) {
-    throw "BaseUrl is required."
+    throw "BaseUrl is required. Use the GitHub Release download base, e.g. https://github.com/owner/repo/releases/download/v0.1.0"
 }
 
 if (-not $PlatformKey) {
@@ -50,7 +50,7 @@ if (-not $PlatformKey) {
 
 if (-not $Version) {
     if ($env:GITHUB_REF_NAME) {
-        $Version = $env:GITHUB_REF_NAME
+        $Version = $env:GITHUB_REF_NAME.TrimStart('v')
     }
     else {
         throw "Version is required."
@@ -79,9 +79,6 @@ if (Test-Path -LiteralPath $FeedDir) {
 }
 $null = New-Item -ItemType Directory -Force -Path $FeedDir
 
-Copy-Item -LiteralPath $artifact.FullName -Destination (Join-Path $FeedDir $artifact.Name) -Force
-Copy-Item -LiteralPath $signature.FullName -Destination (Join-Path $FeedDir $signature.Name) -Force
-
 $signatureText = (Get-Content -LiteralPath $signature.FullName -Raw).Trim()
 $artifactUrl = "{0}/{1}" -f $BaseUrl.TrimEnd('/'), $artifact.Name
 
@@ -99,10 +96,10 @@ $metadata = [ordered]@{
 $outputLatest = Join-Path $FeedDir "latest.json"
 $metadata | ConvertTo-Json -Depth 100 | Set-Content -LiteralPath $outputLatest -Encoding UTF8
 
-Write-Host "Updater feed staged:"
+Write-Host "Updater metadata staged (installers stay on GitHub Release):"
 Write-Host "  feed: $FeedDir"
 Write-Host "  latest: $outputLatest"
 Write-Host "  platform: $PlatformKey"
 Write-Host "  version: $Version"
 Write-Host "  artifact: $($artifact.Name)"
-Write-Host "  baseUrl: $BaseUrl"
+Write-Host "  downloadUrl: $artifactUrl"
