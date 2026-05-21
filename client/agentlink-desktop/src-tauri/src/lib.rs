@@ -3043,10 +3043,15 @@ fn resolve_exe_path(input: &str) -> Result<String, String> {
 }
 
 fn resolve_existing_path(input: &str) -> Option<PathBuf> {
-    candidate_paths(input)
-        .into_iter()
-        .find(|path| path.exists())
-        .and_then(|path| path.canonicalize().ok().or(Some(path)))
+    for variant in path_lookup_variants(input) {
+        if let Some(found) = candidate_paths(&variant)
+            .into_iter()
+            .find(|path| path.exists())
+        {
+            return found.canonicalize().ok().or(Some(found));
+        }
+    }
+    None
 }
 
 fn resolve_output_path(input: &str) -> PathBuf {
@@ -3059,8 +3064,82 @@ fn resolve_output_path(input: &str) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(input))
 }
 
+fn normalize_input_path(input: &str) -> String {
+    let trimmed = input.trim();
+    if cfg!(windows) {
+        trimmed.to_string()
+    } else {
+        trimmed.replace('\\', "/")
+    }
+}
+
+fn path_lookup_variants(input: &str) -> Vec<String> {
+    let trimmed = normalize_input_path(input);
+    if trimmed.is_empty() {
+        return standard_agentlink_exe_rel_paths()
+            .into_iter()
+            .filter_map(|path| path.to_str().map(str::to_string))
+            .collect();
+    }
+
+    let mut variants = vec![trimmed.to_string()];
+    let path = Path::new(&trimmed);
+    if is_agentlink_exe_name(path.file_name().and_then(|name| name.to_str())) {
+        for name in agentlink_exe_file_names() {
+            if let Some(candidate) = replace_path_file_name(path, name) {
+                push_unique_string(&mut variants, candidate);
+            }
+        }
+        for relative in standard_agentlink_exe_rel_paths() {
+            if let Some(text) = relative.to_str() {
+                push_unique_string(&mut variants, text.to_string());
+            }
+        }
+    }
+
+    variants
+}
+
+fn is_agentlink_exe_name(name: Option<&str>) -> bool {
+    matches!(name, Some("agentlink") | Some("agentlink.exe"))
+}
+
+fn agentlink_exe_file_names() -> &'static [&'static str] {
+    if cfg!(windows) {
+        &["agentlink.exe", "agentlink"]
+    } else {
+        &["agentlink", "agentlink.exe"]
+    }
+}
+
+fn standard_agentlink_exe_rel_paths() -> Vec<PathBuf> {
+    ["release", "debug"]
+        .into_iter()
+        .flat_map(|profile| {
+            agentlink_exe_file_names()
+                .iter()
+                .map(move |name| Path::new("target").join(profile).join(name))
+        })
+        .collect()
+}
+
+fn standard_dev_config_rel_path() -> &'static str {
+    "examples/agentlink.all.toml"
+}
+
+fn replace_path_file_name(path: &Path, file_name: &str) -> Option<String> {
+    let parent = path.parent()?;
+    Some(parent.join(file_name).to_string_lossy().to_string())
+}
+
+fn push_unique_string(values: &mut Vec<String>, value: String) {
+    if !values.iter().any(|item| item == &value) {
+        values.push(value);
+    }
+}
+
 fn candidate_paths(input: &str) -> Vec<PathBuf> {
-    let input_path = PathBuf::from(input);
+    let input_path = PathBuf::from(normalize_input_path(input));
     if input_path.is_absolute() {
         return vec![input_path];
     }
@@ -3099,11 +3178,120 @@ fn candidate_roots() -> Vec<PathBuf> {
 
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     push_candidate(&mut roots, manifest_dir.clone());
-    if let Some(repo_root) = manifest_dir.ancestors().nth(3) {
-        push_candidate(&mut roots, repo_root.to_path_buf());
+    if let Some(repo_root) = manifest_repo_root(&manifest_dir) {
+        push_candidate(&mut roots, repo_root);
     }
 
     roots
+}
+
+fn manifest_repo_root(manifest_dir: &Path) -> Option<PathBuf> {
+    manifest_dir.ancestors().find(|dir| {
+        dir.join("Cargo.toml").is_file()
+            && (dir.join("client").join("agentlink-desktop").is_dir()
+                || dir.join("client/agentlink-desktop").is_dir())
+    }).map(Path::to_path_buf)
+}
+
+fn prefer_repo_relative_path(path: &Path) -> String {
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    if let Some(repo_root) = manifest_repo_root(&manifest) {
+        if let Ok(relative) = path.strip_prefix(&repo_root) {
+            return normalize_display_path(relative);
+        }
+    }
+    normalize_display_path(path)
+}
+
+fn normalize_display_path(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DevDefaultPaths {
+    exe_path: String,
+    config_path: String,
+    work_dir: String,
+}
+
+#[tauri::command]
+fn default_dev_paths() -> DevDefaultPaths {
+    let exe_path = standard_agentlink_exe_rel_paths()
+        .into_iter()
+        .find_map(|relative| resolve_existing_path(relative.to_str().unwrap_or_default()))
+        .map(|path| prefer_repo_relative_path(&path))
+        .unwrap_or_else(|| {
+            normalize_display_path(
+                &Path::new("target")
+                    .join("release")
+                    .join(agentlink_exe_file_names()[0]),
+            )
+        });
+
+    let config_path = resolve_existing_path(standard_dev_config_rel_path())
+        .map(|path| prefer_repo_relative_path(&path))
+        .unwrap_or_else(|| standard_dev_config_rel_path().to_string());
+
+    DevDefaultPaths {
+        exe_path,
+        config_path,
+        work_dir: ".".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod path_resolution_tests {
+    use super::*;
+
+    #[test]
+    fn manifest_repo_root_points_at_agentlink() {
+        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let repo_root = manifest_repo_root(&manifest).expect("repo root");
+        assert!(repo_root.join("examples").is_dir());
+        let release_exe = repo_root
+            .join("target")
+            .join("release")
+            .join(agentlink_exe_file_names()[0]);
+        assert!(release_exe.is_file(), "missing {}", release_exe.display());
+    }
+
+    #[test]
+    fn resolves_dev_default_relative_paths_from_desktop_cwd() {
+        let desktop_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(1)
+            .expect("agentlink-desktop dir")
+            .to_path_buf();
+        let previous = std::env::current_dir().ok();
+        std::env::set_current_dir(&desktop_dir).expect("set cwd");
+        let exe = resolve_existing_path("target/release/agentlink");
+        let config = resolve_existing_path("examples/agentlink.all.toml");
+        if let Some(dir) = previous {
+            let _ = std::env::set_current_dir(dir);
+        }
+        assert!(exe.is_some(), "exe should resolve from agentlink-desktop cwd");
+        assert!(config.is_some(), "config should resolve from agentlink-desktop cwd");
+    }
+
+    #[test]
+    fn windows_style_input_resolves_on_unix() {
+        if cfg!(windows) {
+            return;
+        }
+        let desktop_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(1)
+            .expect("agentlink-desktop dir")
+            .to_path_buf();
+        let previous = std::env::current_dir().ok();
+        std::env::set_current_dir(&desktop_dir).expect("set cwd");
+        let exe = resolve_existing_path("target\\release\\agentlink.exe");
+        if let Some(dir) = previous {
+            let _ = std::env::set_current_dir(dir);
+        }
+        assert!(exe.is_some(), "windows-style relative path should resolve");
+    }
 }
 
 fn push_candidate(paths: &mut Vec<PathBuf>, candidate: PathBuf) {
@@ -3246,6 +3434,7 @@ pub fn run() {
             get_qr_setup_status,
             save_config,
             inspect_status,
+            default_dev_paths,
             validate_config,
             setup_channel,
             launch_qr_setup,

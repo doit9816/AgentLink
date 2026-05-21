@@ -1033,9 +1033,23 @@ async function pickPath(kind) {
 }
 
 async function resetDefaultPaths() {
-  connection.value.exePath = DEFAULT_EXE_PATH;
-  connection.value.configPath = defaultConfigPath();
-  connection.value.workDir = DEFAULT_WORK_DIR;
+  if (IS_DEV_LAYOUT) {
+    try {
+      const defaults = await invoke("default_dev_paths");
+      connection.value.exePath = defaults?.exePath || DEFAULT_EXE_PATH;
+      connection.value.configPath = defaults?.configPath || defaultConfigPath();
+      connection.value.workDir = defaults?.workDir || DEFAULT_WORK_DIR;
+    } catch (error) {
+      connection.value.exePath = DEFAULT_EXE_PATH;
+      connection.value.configPath = defaultConfigPath();
+      connection.value.workDir = DEFAULT_WORK_DIR;
+      appendLog(`读取开发态默认路径失败，已回退本地常量：${error}`);
+    }
+  } else {
+    connection.value.exePath = DEFAULT_EXE_PATH;
+    connection.value.configPath = defaultConfigPath();
+    connection.value.workDir = DEFAULT_WORK_DIR;
+  }
   appendLog(`已恢复${IS_DEV_LAYOUT ? "开发态" : "正式版"}默认路径。`);
   await saveClientState("保存默认路径");
   await refreshStatus();
