@@ -287,7 +287,7 @@ function runtimeDefaults() {
   }
   return {
     workDir: "",
-    exePath: "",
+    exePath: CURRENT_OS === "windows" ? "agentlink.exe" : "agentlink",
     configPath: ""
   };
 }
@@ -1617,7 +1617,7 @@ listen("update-download-event", (event) => {
             </label>
           </div>
           <p class="hint">
-            {{ IS_DEV_LAYOUT ? "开发态默认使用仓库里的 target/release 和 examples 相对路径。" : "正式版默认不预填 CLI 和配置文件路径，请先手动选择本机路径。" }}
+            {{ IS_DEV_LAYOUT ? "开发态默认使用仓库里的 target/release 和 examples 相对路径。" : "正式版会优先使用应用内置的 AgentLink CLI；如需改用外部 bridge，可手动选择本机路径。" }}
           </p>
           <label>
             <span class="label-row">操作方式 <span class="help-dot" :title="SELECT_HELP.operationMode">?</span></span>

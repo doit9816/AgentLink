@@ -7,7 +7,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
-use tauri::tray::{TrayIconBuilder, TrayIconEvent};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, WindowEvent};
 use tauri_plugin_updater::UpdaterExt;
 
@@ -3171,9 +3171,7 @@ fn candidate_roots() -> Vec<PathBuf> {
     }
 
     if let Ok(exe) = std::env::current_exe() {
-        if let Some(parent) = exe.parent() {
-            push_candidate(&mut roots, parent.to_path_buf());
-        }
+        push_exe_related_roots(&mut roots, &exe);
     }
 
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -3185,12 +3183,30 @@ fn candidate_roots() -> Vec<PathBuf> {
     roots
 }
 
+fn push_exe_related_roots(roots: &mut Vec<PathBuf>, exe: &Path) {
+    let Some(parent) = exe.parent() else {
+        return;
+    };
+
+    push_candidate(roots, parent.to_path_buf());
+    push_candidate(roots, parent.join("resources"));
+    push_candidate(roots, parent.join("Resources"));
+
+    if let Some(bundle_contents) = parent.parent() {
+        push_candidate(roots, bundle_contents.join("resources"));
+        push_candidate(roots, bundle_contents.join("Resources"));
+    }
+}
+
 fn manifest_repo_root(manifest_dir: &Path) -> Option<PathBuf> {
-    manifest_dir.ancestors().find(|dir| {
-        dir.join("Cargo.toml").is_file()
-            && (dir.join("client").join("agentlink-desktop").is_dir()
-                || dir.join("client/agentlink-desktop").is_dir())
-    }).map(Path::to_path_buf)
+    manifest_dir
+        .ancestors()
+        .find(|dir| {
+            dir.join("Cargo.toml").is_file()
+                && (dir.join("client").join("agentlink-desktop").is_dir()
+                    || dir.join("client/agentlink-desktop").is_dir())
+        })
+        .map(Path::to_path_buf)
 }
 
 fn prefer_repo_relative_path(path: &Path) -> String {
@@ -3270,8 +3286,14 @@ mod path_resolution_tests {
         if let Some(dir) = previous {
             let _ = std::env::set_current_dir(dir);
         }
-        assert!(exe.is_some(), "exe should resolve from agentlink-desktop cwd");
-        assert!(config.is_some(), "config should resolve from agentlink-desktop cwd");
+        assert!(
+            exe.is_some(),
+            "exe should resolve from agentlink-desktop cwd"
+        );
+        assert!(
+            config.is_some(),
+            "config should resolve from agentlink-desktop cwd"
+        );
     }
 
     #[test]
@@ -3291,6 +3313,31 @@ mod path_resolution_tests {
             let _ = std::env::set_current_dir(dir);
         }
         assert!(exe.is_some(), "windows-style relative path should resolve");
+    }
+
+    #[test]
+    fn packaged_macos_bundle_adds_resources_root() {
+        let mut roots = Vec::new();
+        push_exe_related_roots(
+            &mut roots,
+            Path::new("/Applications/AgentLink.app/Contents/MacOS/agentlink-desktop"),
+        );
+        let normalized = roots
+            .iter()
+            .map(|path| normalize_display_path(path))
+            .collect::<Vec<_>>();
+        assert!(
+            normalized
+                .iter()
+                .any(|path| path == "/Applications/AgentLink.app/Contents/MacOS"),
+            "expected macOS executable dir in candidate roots"
+        );
+        assert!(
+            normalized
+                .iter()
+                .any(|path| path == "/Applications/AgentLink.app/Contents/Resources"),
+            "expected macOS resources dir in candidate roots"
+        );
     }
 }
 
@@ -3347,7 +3394,6 @@ fn quit_app(app: &AppHandle) {
 }
 
 fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
-    let show = MenuItem::with_id(app, "tray_show", "显示窗口", true, None::<&str>)?;
     let hide = MenuItem::with_id(app, "tray_hide", "隐藏到托盘", true, None::<&str>)?;
     let about = MenuItem::with_id(app, "tray_about", "关于 AgentLink", true, None::<&str>)?;
     let start = MenuItem::with_id(app, "tray_start_bridge", "启动 Bridge", true, None::<&str>)?;
@@ -3355,19 +3401,13 @@ fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
     let quit = MenuItem::with_id(app, "tray_quit", "退出 AgentLink", true, None::<&str>)?;
     let sep1 = PredefinedMenuItem::separator(app)?;
     let sep2 = PredefinedMenuItem::separator(app)?;
-    let menu = Menu::with_items(
-        app,
-        &[&show, &hide, &about, &sep1, &start, &stop, &sep2, &quit],
-    )?;
+    let menu = Menu::with_items(app, &[&hide, &about, &sep1, &start, &stop, &sep2, &quit])?;
 
     let mut builder = TrayIconBuilder::with_id("agentlink-tray")
         .menu(&menu)
         .tooltip("AgentLink")
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id().as_ref() {
-            "tray_show" => {
-                let _ = show_main_window(app);
-            }
             "tray_hide" => {
                 let _ = hide_main_window(app);
             }
@@ -3385,10 +3425,16 @@ fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
             "tray_quit" => quit_app(app),
             _ => {}
         })
-        .on_tray_icon_event(|tray, event| {
-            if let TrayIconEvent::DoubleClick { .. } = event {
+        .on_tray_icon_event(|tray, event| match event {
+            TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            }
+            | TrayIconEvent::DoubleClick { .. } => {
                 let _ = show_main_window(tray.app_handle());
             }
+            _ => {}
         });
 
     if let Some(icon) = app.default_window_icon().cloned() {
@@ -3403,6 +3449,9 @@ pub fn run() {
     tauri::Builder::default()
         .manage(BridgeState::default())
         .manage(DesktopUpdateState::default())
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            let _ = show_main_window(app);
+        }))
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {

@@ -5,6 +5,8 @@
 
 client/**/node_modules/
 client/**/dist/
+client/**/src-tauri/resources-generated/*
+!client/**/src-tauri/resources-generated/.gitkeep
 client/**/src-tauri/target/
 client/**/src-tauri/.tauri/
 
