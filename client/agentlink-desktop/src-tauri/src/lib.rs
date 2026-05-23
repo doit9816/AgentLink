@@ -714,6 +714,12 @@ fn pick_path_native(options: PickPathOptions) -> Result<Option<String>, String> 
 #[tauri::command]
 fn load_config_snapshot(app: AppHandle, options: ClientOptions) -> Result<ConfigSnapshot, String> {
     let config_path = resolve_config_read_path(&app, &options.config_path)?;
+    if !config_path.is_file() {
+        return Err(
+            "配置文件尚未生成。桌面端默认把 Channel/Agent 存在本地数据库；需要 TOML 时请点「保存配置」或启动 Bridge。"
+                .to_string(),
+        );
+    }
     let raw = std::fs::read_to_string(&config_path).map_err(|err| err.to_string())?;
     let parsed = raw.parse::<toml::Value>().map_err(|err| err.to_string())?;
     let project = find_project(&parsed, &options.project)
@@ -1317,11 +1323,13 @@ fn weixin_uin_header() -> String {
 }
 
 fn config_data_dir(app: &AppHandle, options: &ClientOptions) -> Result<PathBuf, String> {
-    let config_path = resolve_config_read_path(app, &options.config_path)?;
-    Ok(config_path
+    let config_path = resolve_config_write_path(app, &options.config_path)?;
+    let data = config_path
         .parent()
         .map(|parent| parent.join("data"))
-        .unwrap_or_else(|| PathBuf::from("data")))
+        .unwrap_or_else(|| PathBuf::from("data"));
+    std::fs::create_dir_all(&data).map_err(|err| err.to_string())?;
+    Ok(data)
 }
 
 fn project_store_candidates(
@@ -3115,7 +3123,7 @@ fn command_exists(command: &str) -> bool {
 }
 
 fn validate_config_local(app: &AppHandle, options: &ClientOptions) -> Result<String, String> {
-    let config = resolve_config_read_path(app, &options.config_path)?;
+    let config = write_config_file(app, options)?;
     let raw = std::fs::read_to_string(&config)
         .map_err(|err| format!("failed to read config `{}`: {err}", config.display()))?;
     let parsed = raw
@@ -3864,21 +3872,40 @@ fn resolve_config_write_path(app: &AppHandle, input: &str) -> Result<PathBuf, St
     seed_user_config_from(template.as_deref(), &user_path)
 }
 
+fn config_path_refers_to_user_store(input: &str, user_path: &Path) -> bool {
+    let trimmed = normalize_input_path(input);
+    if trimmed.is_empty() {
+        return true;
+    }
+    if trimmed == user_path.to_string_lossy().as_ref() {
+        return true;
+    }
+    let candidate =
+        resolve_existing_path(&trimmed).unwrap_or_else(|| PathBuf::from(trimmed.as_str()));
+    if candidate == user_path {
+        return true;
+    }
+    candidate.ends_with("agentlink.toml") && user_path.ends_with("agentlink.toml")
+}
+
 fn resolve_config_read_path(app: &AppHandle, input: &str) -> Result<PathBuf, String> {
     let user_path = user_config_path(app)?;
     if user_path.is_file() {
         return Ok(user_path);
     }
 
-    let trimmed = input.trim();
-    if trimmed.is_empty() {
-        return Err("请先选择或生成配置文件路径。".to_string());
+    let trimmed = normalize_input_path(input);
+    if !trimmed.is_empty() {
+        if let Some(path) = resolve_existing_path(&trimmed).filter(|path| path.is_file()) {
+            return Ok(path);
+        }
+        if config_path_refers_to_user_store(&trimmed, &user_path) {
+            return Ok(user_path);
+        }
+        return Err(format!("config file not found: {trimmed}"));
     }
 
-    let resolved = resolve_existing_path(trimmed)
-        .filter(|path| path.is_file())
-        .ok_or_else(|| format!("config file not found: {trimmed}"))?;
-    Ok(resolved)
+    Ok(user_path)
 }
 
 fn normalize_input_path(input: &str) -> String {

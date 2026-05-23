@@ -1410,6 +1410,22 @@ function saveConfig(label = "保存配置") {
   });
 }
 
+async function saveChannelSettings() {
+  return run("保存 Channel", async () => {
+    await persistChannelFieldsToSqlite();
+    await saveClientState("保存 Channel");
+    return "Channel 已保存到本地数据库；启动 Bridge 时会自动生成 agentlink.toml";
+  });
+}
+
+async function saveAgentSettings() {
+  return run("保存 Agent", async () => {
+    await persistAgentFieldsToSqlite();
+    await saveClientState("保存 Agent");
+    return "Agent 已保存到本地数据库；启动 Bridge 时会自动生成 agentlink.toml";
+  });
+}
+
 function applyConfigSnapshot(snapshot) {
   connection.value.workDir = snapshot.workDir || connection.value.workDir;
   connection.value.selectedChannel = snapshot.selectedChannel || connection.value.selectedChannel;
@@ -1553,7 +1569,8 @@ async function scanBind() {
   appendLog(`准备在客户端打开 ${currentChannel.value.label} 扫码绑定...`);
   return run("扫码绑定", async () => {
     await refreshChannelBindingHint();
-    await applySaveConfigResult(await invoke("save_config", { options: options() }));
+    await persistChannelFieldsToSqlite();
+    await applySaveConfigResult(await invoke("ensure_config_file", { options: options() }));
     const next = await invoke("start_qr_setup", { options: options() });
     applyQrSetupStatus(next);
     startQrPolling(next.sessionId);
@@ -1805,12 +1822,13 @@ listen("update-download-event", (event) => {
               <button type="button" class="small-button" @click="pickPath('exe')">选择</button>
             </div>
           </label>
-          <label>config
+          <label>config（可选，启动 Bridge 时自动生成）
             <div class="input-with-button">
               <input v-model="connection.configPath" />
               <button type="button" class="small-button" @click="pickPath('config')">选择</button>
             </div>
           </label>
+          <p class="hint">Channel / Agent 日常保存在本地数据库；只有启动 Bridge 或点「保存配置」时才写入 agentlink.toml。</p>
           <div class="grid form-two">
             <label>project<input v-model="connection.project" /></label>
             <label>workspace
@@ -1878,7 +1896,7 @@ listen("update-download-event", (event) => {
           <div class="section-head">
             <div>
               <h2>Channel</h2>
-              <p>点击选择聊天渠道，卡片会显示当前填写或绑定状态。</p>
+              <p>点击选择聊天渠道。密钥保存在本地数据库，启动 Bridge 时再写入 TOML。</p>
             </div>
             <span class="pill">{{ currentChannel.id }}</span>
           </div>
@@ -1961,7 +1979,7 @@ listen("update-download-event", (event) => {
             <button v-if="canGuidedSetup" type="button" @click="prepareChannelBinding">配置引导</button>
             <button type="button" class="secondary" @click="validateChannelFields">校验字段</button>
             <button type="button" class="secondary" :disabled="!hasReusableChannelConfig" @click="reuseChannelConfig">复用已配置 Channel</button>
-            <button type="button" @click="saveConfig('保存 Channel')">保存 Channel</button>
+            <button type="button" @click="saveChannelSettings">保存 Channel</button>
             <button type="button" class="secondary" @click="refreshStatus">检测状态</button>
           </div>
         </div>
@@ -2053,7 +2071,7 @@ listen("update-download-event", (event) => {
           <div class="section-head">
             <div>
               <h2>Agent</h2>
-              <p>选择编程 Agent。当前 Agent 会检测命令是否存在。</p>
+              <p>选择编程 Agent。配置保存在本地数据库；启动 Bridge 时再生成 agentlink.toml。</p>
             </div>
             <span class="pill">{{ currentAgent.id }}</span>
           </div>
@@ -2120,7 +2138,7 @@ listen("update-download-event", (event) => {
 
           <div class="hint">当前运行会使用 {{ currentAgent.label }} 处理来自 {{ currentChannel.label }} 的消息。</div>
           <div class="action-row">
-            <button type="button" @click="saveConfig('保存 Agent')">保存 Agent</button>
+            <button type="button" @click="saveAgentSettings">保存 Agent</button>
             <button type="button" class="secondary" @click="checkAgent(currentAgent)">检测当前</button>
             <button type="button" class="secondary" @click="checkAllAgents">检测全部</button>
           </div>
