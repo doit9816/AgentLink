@@ -1,9 +1,10 @@
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::collections::HashSet;
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -2875,17 +2876,242 @@ fn default_agent_command(agent_type: &str) -> &str {
     }
 }
 
-fn command_exists(command: &str) -> bool {
+/// GUI apps on macOS/Windows often inherit a minimal PATH. Cache a richer search path
+/// (login shell + Homebrew/cargo/npm defaults) so packaged builds can find CLI agents.
+static EXECUTABLE_SEARCH_PATHS: OnceLock<Vec<PathBuf>> = OnceLock::new();
+
+fn executable_search_paths() -> &'static [PathBuf] {
+    EXECUTABLE_SEARCH_PATHS.get_or_init(build_executable_search_paths)
+}
+
+fn build_executable_search_paths() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    let mut seen = HashSet::new();
+
+    let mut push = |path: PathBuf| {
+        if path.as_os_str().is_empty() {
+            return;
+        }
+        let key = path.to_string_lossy().to_string();
+        if seen.insert(key) {
+            paths.push(path);
+        }
+    };
+
+    for path in login_shell_path_entries() {
+        push(path);
+    }
+    #[cfg(target_os = "macos")]
+    for path in macos_path_helper_entries() {
+        push(path);
+    }
+    for path in parse_path_env_var() {
+        push(path);
+    }
+    for path in standard_extra_path_entries() {
+        push(path);
+    }
+
+    paths
+}
+
+fn parse_path_env_var() -> Vec<PathBuf> {
+    std::env::var_os("PATH")
+        .map(|value| parse_path_list(&value.to_string_lossy()))
+        .unwrap_or_default()
+}
+
+fn parse_path_list(raw: &str) -> Vec<PathBuf> {
+    let separator = if cfg!(windows) { ';' } else { ':' };
+    raw.split(separator)
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+        .map(PathBuf::from)
+        .collect()
+}
+
+fn login_shell_path_entries() -> Vec<PathBuf> {
+    #[cfg(windows)]
+    {
+        let output = {
+            let mut command = Command::new("powershell");
+            command.args([
+                "-NoProfile",
+                "-Command",
+                "[Environment]::GetEnvironmentVariable('PATH','User') + ';' + [Environment]::GetEnvironmentVariable('PATH','Machine')",
+            ]);
+            command.creation_flags(CREATE_NO_WINDOW);
+            command.output()
+        };
+        return output
+            .ok()
+            .filter(|value| value.status.success())
+            .map(|value| parse_path_list(&String::from_utf8_lossy(&value.stdout)))
+            .unwrap_or_default();
+    }
+
+    #[cfg(not(windows))]
+    {
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
+        let Some(output) = Command::new(&shell)
+            .args(["-ilc", "printf %s \"$PATH\""])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .output()
+            .ok()
+        else {
+            return Vec::new();
+        };
+        if !output.status.success() {
+            return Vec::new();
+        }
+        return parse_path_list(&String::from_utf8_lossy(&output.stdout));
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn macos_path_helper_entries() -> Vec<PathBuf> {
+    let Some(output) = Command::new("/usr/libexec/path_helper")
+        .arg("-s")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .ok()
+    else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let Some(start) = text.find("PATH=\"") else {
+        return Vec::new();
+    };
+    let rest = &text[start + 6..];
+    let Some(end) = rest.find('"') else {
+        return Vec::new();
+    };
+    parse_path_list(&rest[..end])
+}
+
+fn standard_extra_path_entries() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    if cfg!(windows) {
+        if let Ok(profile) = std::env::var("USERPROFILE") {
+            let home = PathBuf::from(&profile);
+            paths.push(home.join(".cargo").join("bin"));
+            paths.push(home.join("AppData").join("Roaming").join("npm"));
+            paths.push(home.join("AppData").join("Local").join("Programs"));
+        }
+        if let Ok(local) = std::env::var("LOCALAPPDATA") {
+            paths.push(PathBuf::from(local).join("Programs"));
+        }
+        return paths;
+    }
+
+    paths.push(PathBuf::from("/opt/homebrew/bin"));
+    paths.push(PathBuf::from("/usr/local/bin"));
+    paths.push(PathBuf::from("/usr/bin"));
+    paths.push(PathBuf::from("/bin"));
+    if let Ok(home) = std::env::var("HOME") {
+        let home = PathBuf::from(home);
+        paths.push(home.join(".local").join("bin"));
+        paths.push(home.join(".cargo").join("bin"));
+        paths.push(home.join(".npm-global").join("bin"));
+        paths.push(home.join(".volta").join("bin"));
+        paths.push(
+            home.join(".fnm")
+                .join("aliases")
+                .join("default")
+                .join("bin"),
+        );
+    }
+    paths
+}
+
+fn executable_candidate_names(command: &str) -> Vec<String> {
+    if cfg!(windows) {
+        vec![
+            format!("{command}.exe"),
+            command.to_string(),
+            format!("{command}.cmd"),
+        ]
+    } else {
+        vec![command.to_string()]
+    }
+}
+
+fn is_executable_file(path: &Path) -> bool {
+    if !path.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::io::Read;
+        use std::os::unix::fs::PermissionsExt;
+        if path
+            .metadata()
+            .map(|meta| meta.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false)
+        {
+            return true;
+        }
+        let mut file = match std::fs::File::open(path) {
+            Ok(file) => file,
+            Err(_) => return false,
+        };
+        let mut magic = [0u8; 2];
+        file.read_exact(&mut magic).ok() == Some(()) && magic == *b"#!"
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
+fn resolve_command_in_search_path(command: &str) -> Option<PathBuf> {
+    let command = command.trim();
+    if command.is_empty() {
+        return None;
+    }
+
+    for dir in executable_search_paths() {
+        for name in executable_candidate_names(command) {
+            let candidate = dir.join(&name);
+            if is_executable_file(&candidate) {
+                return candidate.canonicalize().ok().or(Some(candidate));
+            }
+        }
+    }
+
+    command_exists_via_system_lookup(command).then(|| PathBuf::from(command))
+}
+
+fn command_exists_via_system_lookup(command: &str) -> bool {
+    let path_joined = executable_search_paths()
+        .iter()
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join(if cfg!(windows) { ";" } else { ":" });
+
     let probe = if cfg!(windows) {
         let mut command_builder = Command::new("where");
         command_builder.arg(command);
+        command_builder.env("PATH", &path_joined);
         #[cfg(windows)]
         command_builder.creation_flags(CREATE_NO_WINDOW);
         command_builder.output()
     } else {
-        Command::new("which").arg(command).output()
+        let mut command_builder = Command::new("which");
+        command_builder.arg(command);
+        command_builder.env("PATH", &path_joined);
+        command_builder.output()
     };
     probe.map(|output| output.status.success()).unwrap_or(false)
+}
+
+fn command_exists(command: &str) -> bool {
+    resolve_command_in_search_path(command).is_some()
 }
 
 fn validate_config_local(app: &AppHandle, options: &ClientOptions) -> Result<String, String> {
@@ -3900,6 +4126,24 @@ fn default_dev_paths() -> DevDefaultPaths {
 }
 
 #[cfg(test)]
+mod executable_path_tests {
+    use super::*;
+
+    #[test]
+    fn parse_path_list_splits_unix_paths() {
+        let paths = parse_path_list("/opt/homebrew/bin:/usr/local/bin");
+        assert_eq!(paths.len(), 2);
+        assert_eq!(paths[0].to_str(), Some("/opt/homebrew/bin"));
+    }
+
+    #[test]
+    fn standard_extra_path_includes_homebrew_on_unix() {
+        let paths = standard_extra_path_entries();
+        assert!(paths.iter().any(|path| path.ends_with("homebrew/bin")));
+    }
+}
+
+#[cfg(test)]
 mod channel_binding_tests {
     use super::*;
 
@@ -4166,6 +4410,7 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
+            let _ = executable_search_paths();
             setup_tray(app)?;
             Ok(())
         })
