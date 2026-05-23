@@ -503,7 +503,7 @@ async fn check_for_updates_bust(
     let update = build_cache_busting_updater(&app)?
         .check()
         .await
-        .map_err(|err| err.to_string())?;
+        .map_err(|err| format_updater_check_error(&err.to_string()))?;
 
     let mut pending = state.pending.lock().map_err(|err| err.to_string())?;
     if let Some(update) = update {
@@ -2746,6 +2746,15 @@ fn agent_install_status_text(agent_type: &str, installed: bool) -> String {
     } else {
         "not found".to_string()
     }
+}
+
+fn format_updater_check_error(err: &str) -> String {
+    if err.contains("None of the fallback platforms") {
+        return "更新清单里没有当前 macOS 平台的安装包（常见于 Release 只发布了 Windows/Linux）。\
+请在 GitHub Actions 重新运行失败的 macOS 构建任务，或等待包含 macOS 产物的新版本。"
+            .to_string();
+    }
+    err.to_string()
 }
 
 fn build_cache_busting_updater(app: &AppHandle) -> Result<tauri_plugin_updater::Updater, String> {

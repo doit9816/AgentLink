@@ -33,16 +33,19 @@ jobs:
             bundleDir: client/agentlink-desktop/src-tauri/target/release/bundle
           - name: macOS Apple Silicon
             platform: macos-latest
-            args: "--target aarch64-apple-darwin"
+            # Skip Tauri bundle_dmg.sh in CI (AppleScript/Finder); package DMG via hdiutil below.
+            args: "--target aarch64-apple-darwin --bundles app"
             updaterTarget: darwin
             updaterArch: aarch64
+            dmgArchSuffix: aarch64
             updaterPlatformKey: darwin-aarch64
             bundleDir: client/agentlink-desktop/src-tauri/target/aarch64-apple-darwin/release/bundle
           - name: macOS Intel
             platform: macos-latest
-            args: "--target x86_64-apple-darwin"
+            args: "--target x86_64-apple-darwin --bundles app"
             updaterTarget: darwin
             updaterArch: x86_64
+            dmgArchSuffix: x64
             updaterPlatformKey: darwin-x86_64
             bundleDir: client/agentlink-desktop/src-tauri/target/x86_64-apple-darwin/release/bundle
 
@@ -127,4 +130,91 @@ jobs:
           releaseDraft: false
           prerelease: false
           updaterJsonPreferNsis: true
+
+      - name: Package macOS DMG with hdiutil
+        if: matrix.updaterTarget == 'darwin'
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ env.RELEASE_VERSION }}
+        run: |
+          set -euo pipefail
+          APP_NAME="AgentLink"
+          BUNDLE_DIR="${{ github.workspace }}/${{ matrix.bundleDir }}"
+          APP_BUNDLE_DIR="$BUNDLE_DIR/macos"
+          DMG_DIR="$BUNDLE_DIR/dmg"
+          DMG_NAME="${APP_NAME}_${RELEASE_VERSION}_${{ matrix.dmgArchSuffix }}.dmg"
+          RW_DMG="$DMG_DIR/rw.${DMG_NAME}"
+          FINAL_DMG="$DMG_DIR/$DMG_NAME"
+
+          if [[ ! -d "$APP_BUNDLE_DIR/${APP_NAME}.app" ]]; then
+            echo "Missing app bundle at $APP_BUNDLE_DIR/${APP_NAME}.app" >&2
+            exit 1
+          fi
+
+          mkdir -p "$DMG_DIR"
+          rm -f "$RW_DMG" "$FINAL_DMG"
+
+          APP_SIZE_KB="$(du -sk "$APP_BUNDLE_DIR" | awk '{print $1}')"
+          DMG_SIZE_MB="$(( (APP_SIZE_KB + 1023) / 1024 + 64 ))"
+          echo "Creating read-write disk image (${DMG_SIZE_MB} MB)..."
+          hdiutil create \
+            -srcfolder "$APP_BUNDLE_DIR" \
+            -volname "$APP_NAME" \
+            -fs HFS+ \
+            -format UDRW \
+            -size "${DMG_SIZE_MB}m" \
+            "$RW_DMG"
+          hdiutil convert "$RW_DMG" -format UDZO -o "$FINAL_DMG"
+          rm -f "$RW_DMG"
+          echo "Created $FINAL_DMG"
+
+      - name: Upload macOS DMG to release
+        if: matrix.updaterTarget == 'darwin' && startsWith(github.ref, 'refs/tags/v')
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          DMG_PATH="${{ github.workspace }}/${{ matrix.bundleDir }}/dmg/AgentLink_${RELEASE_VERSION}_${{ matrix.dmgArchSuffix }}.dmg"
+          test -f "$DMG_PATH"
+          gh release upload "${GITHUB_REF_NAME}" "$DMG_PATH" --clobber
+
+  validate-updater-manifest:
+    name: Validate latest.json platforms
+    needs: build-desktop
+    if: always() && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail when desktop matrix did not all succeed
+        if: needs.build-desktop.result != 'success'
+        shell: bash
+        run: |
+          echo "::error::One or more desktop build jobs failed; do not treat this release as complete."
+          exit 1
+
+      - name: Ensure latest.json includes macOS updater keys
+        shell: bash
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          curl -fsSL "https://github.com/doit9816/AgentLink/releases/download/${TAG}/latest.json" -o latest.json
+          python3 <<'PY'
+          import json
+          import sys
+
+          data = json.load(open("latest.json", encoding="utf-8"))
+          platforms = data.get("platforms") or {}
+          required = (
+              "darwin-x86_64",
+              "darwin-aarch64",
+              "windows-x86_64",
+              "linux-x86_64",
+          )
+          missing = [key for key in required if key not in platforms]
+          if missing:
+              print("Missing platforms in latest.json:", ", ".join(missing))
+              print("Available:", ", ".join(sorted(platforms)))
+              sys.exit(1)
+          print("latest.json includes required platforms:", ", ".join(required))
+          PY
 
