@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::{BTreeMap, HashMap};
-use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
@@ -37,7 +36,7 @@ const DEFAULT_WEIXIN_BOT_TYPE: &str = "3";
 const DESKTOP_UPDATER_ENDPOINT: &str =
     "https://github.com/doit9816/AgentLink/releases/latest/download/latest.json";
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ClientOptions {
     exe_path: String,
@@ -46,6 +45,8 @@ struct ClientOptions {
     work_dir: String,
     platform: String,
     extra: Option<String>,
+    /// Legacy field from older desktop builds; Channel UI no longer exposes CLI mode.
+    #[allow(dead_code)]
     operation_mode: Option<String>,
     agent_type: Option<String>,
     agent_backend: Option<String>,
@@ -55,6 +56,8 @@ struct ClientOptions {
     reasoning_effort: Option<String>,
     agent_args: Option<String>,
     channel_fields: Option<HashMap<String, String>>,
+    /// Desktop connection id; used to load Channel fields from SQLite with priority.
+    connection_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -120,6 +123,13 @@ struct AgentCheckStatus {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct SaveConfigResult {
+    message: String,
+    config_path: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct ConfigSnapshot {
     project: String,
     work_dir: String,
@@ -142,6 +152,19 @@ struct QrSetupStatus {
     output: Vec<String>,
     done: bool,
     success: Option<bool>,
+}
+
+/// Unified binding/validation result for Channel save, guided setup, and status checks.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ChannelBindingStatus {
+    platform: String,
+    state: String,
+    message: String,
+    ready: bool,
+    missing_fields: Vec<String>,
+    setup_url: Option<String>,
+    next_step: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -336,9 +359,9 @@ struct DiscoveredTarget {
 }
 
 #[tauri::command]
-fn inspect_status(options: ClientOptions) -> Result<ClientStatus, String> {
+fn inspect_status(app: AppHandle, options: ClientOptions) -> Result<ClientStatus, String> {
     let exe_exists = resolve_existing_path(&options.exe_path).is_some();
-    let config_path = resolve_existing_path(&options.config_path);
+    let config_path = resolve_config_read_path(&app, &options.config_path).ok();
     let config_exists = config_path.is_some();
     let raw = config_path
         .as_ref()
@@ -360,15 +383,14 @@ fn inspect_status(options: ClientOptions) -> Result<ClientStatus, String> {
         .and_then(toml::Value::as_str)
         == Some(agent_type);
 
-    let mut fields = project
-        .and_then(|project| platform_options(project, &options.platform))
-        .unwrap_or_default();
-    fields.extend(options.channel_fields.clone().unwrap_or_default());
+    let fields = resolved_channel_fields(&app, &options)?;
     let field_ready = required_fields_ready(&options.platform, &fields);
     let binding_ready =
-        field_ready || (channel_configured && platform_supports_scan(&options.platform));
+        field_ready || (channel_configured && platform_supports_auto_qr(&options.platform));
 
-    let agent_installed = agent_is_available(agent_type, &options.agent_command);
+    let agent_fields = resolved_agent_fields(&app, &options)?;
+    let agent_command = agent_fields.get("command").cloned();
+    let agent_installed = agent_is_available(agent_type, &agent_command);
 
     Ok(ClientStatus {
         exe_exists,
@@ -689,9 +711,8 @@ fn pick_path_native(options: PickPathOptions) -> Result<Option<String>, String> 
 }
 
 #[tauri::command]
-fn load_config_snapshot(options: ClientOptions) -> Result<ConfigSnapshot, String> {
-    let config_path = resolve_existing_path(&options.config_path)
-        .ok_or_else(|| format!("config file not found: {}", options.config_path))?;
+fn load_config_snapshot(app: AppHandle, options: ClientOptions) -> Result<ConfigSnapshot, String> {
+    let config_path = resolve_config_read_path(&app, &options.config_path)?;
     let raw = std::fs::read_to_string(&config_path).map_err(|err| err.to_string())?;
     let parsed = raw.parse::<toml::Value>().map_err(|err| err.to_string())?;
     let project = find_project(&parsed, &options.project)
@@ -713,7 +734,9 @@ fn load_config_snapshot(options: ClientOptions) -> Result<ConfigSnapshot, String
         })
         .unwrap_or(&options.platform)
         .to_string();
-    let channel_fields = platform_options(project, &selected_channel).unwrap_or_default();
+    let mut options_for_fields = options.clone();
+    options_for_fields.platform = selected_channel.clone();
+    let channel_fields = resolved_channel_fields(&app, &options_for_fields)?;
 
     let agent = project
         .get("agent")
@@ -724,19 +747,9 @@ fn load_config_snapshot(options: ClientOptions) -> Result<ConfigSnapshot, String
         .and_then(toml::Value::as_str)
         .unwrap_or("codex")
         .to_string();
-    let agent_options = agent
-        .get("options")
-        .and_then(toml::Value::as_table)
-        .cloned()
-        .unwrap_or_default();
-
-    let mut agent_fields = HashMap::new();
-    for (key, value) in &agent_options {
-        agent_fields.insert(
-            agent_option_key(&selected_agent, key),
-            toml_value_to_string(value),
-        );
-    }
+    let mut options_for_agent = options.clone();
+    options_for_agent.agent_type = Some(selected_agent.clone());
+    let agent_fields = resolved_agent_fields(&app, &options_for_agent)?;
     let work_dir = agent_fields
         .get("workDir")
         .or_else(|| agent_fields.get("work_dir"))
@@ -784,6 +797,8 @@ fn load_client_state(app: tauri::AppHandle) -> Result<Option<ClientDatabaseState
         return Ok(None);
     }
 
+    overlay_connections_from_sqlite(&db, &mut connections)?;
+
     let active_connection_id = active_connection_id
         .filter(|id| connections.iter().any(|item| item.id == *id))
         .unwrap_or_else(|| connections[0].id.clone());
@@ -829,8 +844,11 @@ fn save_client_state(app: tauri::AppHandle, state: ClientDatabaseState) -> Resul
             .map_err(|err| err.to_string())?;
     }
 
-    for connection in state.connections {
-        let data = serde_json::to_string(&connection).map_err(|err| err.to_string())?;
+    sync_connection_settings_from_connections(&tx, &state.connections)?;
+    sync_channel_configs_from_connections(&tx, &state.connections)?;
+    sync_agent_configs_from_connections(&tx, &state.connections)?;
+    for connection in &state.connections {
+        let data = serde_json::to_string(connection).map_err(|err| err.to_string())?;
         tx.execute(
             "insert into connections(id, data, updated_at) values(?1, ?2, strftime('%s','now'))
              on conflict(id) do update set data = excluded.data, updated_at = excluded.updated_at",
@@ -855,13 +873,25 @@ fn load_update_preferences(db: &rusqlite::Connection) -> UpdatePreferences {
 }
 
 #[tauri::command]
-fn validate_config(options: ClientOptions) -> Result<String, String> {
-    if operation_mode(&options) != "cli" {
-        return validate_config_local(&options);
-    }
-    let exe = resolve_exe_path(&options.exe_path)?;
-    let config = resolve_output_path(&options.config_path);
-    run_capture(&exe, &["--validate-config", path_str(&config)?])
+fn validate_config(app: AppHandle, options: ClientOptions) -> Result<String, String> {
+    validate_config_local(&app, &options)
+}
+
+#[tauri::command]
+fn validate_channel_binding(
+    app: AppHandle,
+    options: ClientOptions,
+) -> Result<ChannelBindingStatus, String> {
+    Ok(channel_binding_status(&app, &options)?)
+}
+
+#[tauri::command]
+fn prepare_channel_binding(
+    app: AppHandle,
+    options: ClientOptions,
+    state: tauri::State<'_, BridgeState>,
+) -> Result<QrSetupStatus, String> {
+    start_guided_channel_binding(app, options, state)
 }
 
 #[tauri::command]
@@ -919,10 +949,13 @@ async fn send_channel_message(
 }
 
 #[tauri::command]
-fn discover_channel_targets(options: ClientOptions) -> Result<Vec<DiscoveredTarget>, String> {
+fn discover_channel_targets(
+    app: AppHandle,
+    options: ClientOptions,
+) -> Result<Vec<DiscoveredTarget>, String> {
     let mut out = Vec::new();
     let mut seen = std::collections::BTreeSet::new();
-    for db_path in project_store_candidates(&options)? {
+    for db_path in project_store_candidates(&app, &options)? {
         if !db_path.exists() {
             continue;
         }
@@ -1282,16 +1315,19 @@ fn weixin_uin_header() -> String {
     base64::engine::general_purpose::STANDARD.encode(rand::random::<u32>().to_string())
 }
 
-fn config_data_dir(options: &ClientOptions) -> PathBuf {
-    let config_path = resolve_output_path(&options.config_path);
-    config_path
+fn config_data_dir(app: &AppHandle, options: &ClientOptions) -> Result<PathBuf, String> {
+    let config_path = resolve_config_read_path(app, &options.config_path)?;
+    Ok(config_path
         .parent()
         .map(|parent| parent.join("data"))
-        .unwrap_or_else(|| PathBuf::from("data"))
+        .unwrap_or_else(|| PathBuf::from("data")))
 }
 
-fn project_store_candidates(options: &ClientOptions) -> Result<Vec<PathBuf>, String> {
-    let config_path = resolve_output_path(&options.config_path);
+fn project_store_candidates(
+    app: &AppHandle,
+    options: &ClientOptions,
+) -> Result<Vec<PathBuf>, String> {
+    let config_path = resolve_config_read_path(app, &options.config_path)?;
     let data_dir = std::fs::read_to_string(&config_path)
         .ok()
         .and_then(|raw| raw.parse::<toml::Value>().ok())
@@ -1313,7 +1349,7 @@ fn project_store_candidates(options: &ClientOptions) -> Result<Vec<PathBuf>, Str
         }
         dirs.push(current_dir.join(&data_path));
     }
-    dirs.push(config_data_dir(options));
+    dirs.push(config_data_dir(app, options)?);
     dirs.push(std::env::temp_dir().join("agentlink-live-data"));
 
     let mut seen = std::collections::BTreeSet::new();
@@ -1404,213 +1440,25 @@ fn launch_qr_setup(options: ClientOptions) -> Result<String, String> {
 
 #[tauri::command]
 async fn start_qr_setup(
+    app: AppHandle,
     options: ClientOptions,
     state: tauri::State<'_, BridgeState>,
 ) -> Result<QrSetupStatus, String> {
-    if !platform_supports_scan(&options.platform) {
+    if !platform_supports_auto_qr(&options.platform) {
         return Err(format!(
-            "{} does not support QR setup. Please fill credentials manually.",
+            "{} 不支持客户端内自动扫码，请使用「配置引导」填写并校验字段。",
             options.platform
         ));
     }
 
-    if operation_mode(&options) == "cli" {
-        return start_cli_qr_setup(options, state);
-    }
-
     if matches!(options.platform.as_str(), "feishu" | "lark") {
-        return start_feishu_qr_setup(options, state).await;
+        return start_feishu_qr_setup(app, options, state).await;
     }
     if options.platform == "weixin" {
-        return start_weixin_qr_setup(options, state).await;
-    }
-    if matches!(options.platform.as_str(), "qq" | "dingtalk" | "wecom") {
-        return complete_gateway_qr_setup(options, state);
+        return start_weixin_qr_setup(app, options, state).await;
     }
 
-    let exe = resolve_exe_path(&options.exe_path)?;
-    let args = setup_args_for_qr(&options)?;
-    let session_id = format!(
-        "{}-{}",
-        options.platform,
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|err| err.to_string())?
-            .as_millis()
-    );
-    let status = Arc::new(Mutex::new(QrSetupStatus {
-        session_id: session_id.clone(),
-        platform: options.platform.clone(),
-        state: "starting".to_string(),
-        message: "Starting QR setup in background.".to_string(),
-        user_code: None,
-        qr_url: None,
-        qr_svg: None,
-        output: Vec::new(),
-        done: false,
-        success: None,
-    }));
-
-    let mut command = Command::new(exe);
-    command
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    #[cfg(windows)]
-    command.creation_flags(CREATE_NO_WINDOW);
-
-    let mut child = command.spawn().map_err(|err| err.to_string())?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| "failed to capture setup stdout".to_string())?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| "failed to capture setup stderr".to_string())?;
-
-    state
-        .qr_sessions
-        .lock()
-        .map_err(|err| err.to_string())?
-        .insert(session_id, Arc::clone(&status));
-
-    let stdout_status = Arc::clone(&status);
-    std::thread::spawn(move || {
-        let reader = BufReader::new(stdout);
-        for line in reader.lines().map_while(Result::ok) {
-            record_setup_line(&stdout_status, &line, false);
-        }
-    });
-
-    let stderr_status = Arc::clone(&status);
-    std::thread::spawn(move || {
-        let reader = BufReader::new(stderr);
-        for line in reader.lines().map_while(Result::ok) {
-            record_setup_line(&stderr_status, &line, true);
-        }
-    });
-
-    let wait_status = Arc::clone(&status);
-    std::thread::spawn(move || {
-        let result = child.wait();
-        if let Ok(mut status) = wait_status.lock() {
-            match result {
-                Ok(exit) if exit.success() => {
-                    status.state = "completed".to_string();
-                    status.message = "QR setup completed.".to_string();
-                    status.done = true;
-                    status.success = Some(true);
-                }
-                Ok(exit) => {
-                    status.state = "failed".to_string();
-                    status.message = format!("QR setup exited with status {exit}.");
-                    status.done = true;
-                    status.success = Some(false);
-                }
-                Err(err) => {
-                    status.state = "failed".to_string();
-                    status.message = err.to_string();
-                    status.done = true;
-                    status.success = Some(false);
-                }
-            }
-        }
-    });
-
-    qr_setup_status_from_arc(&status)
-}
-
-fn start_cli_qr_setup(
-    options: ClientOptions,
-    state: tauri::State<'_, BridgeState>,
-) -> Result<QrSetupStatus, String> {
-    let exe = resolve_exe_path(&options.exe_path)?;
-    let args = setup_args_for_qr(&options)?;
-    let session_id = setup_session_id(&options.platform)?;
-    let status = Arc::new(Mutex::new(QrSetupStatus {
-        session_id: session_id.clone(),
-        platform: options.platform.clone(),
-        state: "starting".to_string(),
-        message: "Starting CLI compatible QR setup in background.".to_string(),
-        user_code: None,
-        qr_url: None,
-        qr_svg: None,
-        output: Vec::new(),
-        done: false,
-        success: None,
-    }));
-
-    let mut command = Command::new(exe);
-    command
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    #[cfg(windows)]
-    command.creation_flags(CREATE_NO_WINDOW);
-
-    let mut child = command.spawn().map_err(|err| err.to_string())?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| "failed to capture setup stdout".to_string())?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| "failed to capture setup stderr".to_string())?;
-
-    state
-        .qr_sessions
-        .lock()
-        .map_err(|err| err.to_string())?
-        .insert(session_id, Arc::clone(&status));
-
-    let stdout_status = Arc::clone(&status);
-    std::thread::spawn(move || {
-        let reader = BufReader::new(stdout);
-        for line in reader.lines().map_while(Result::ok) {
-            record_setup_line(&stdout_status, &line, false);
-        }
-    });
-
-    let stderr_status = Arc::clone(&status);
-    std::thread::spawn(move || {
-        let reader = BufReader::new(stderr);
-        for line in reader.lines().map_while(Result::ok) {
-            record_setup_line(&stderr_status, &line, true);
-        }
-    });
-
-    let wait_status = Arc::clone(&status);
-    std::thread::spawn(move || {
-        let result = child.wait();
-        if let Ok(mut status) = wait_status.lock() {
-            match result {
-                Ok(exit) if exit.success() => {
-                    status.state = "completed".to_string();
-                    status.message = "CLI QR setup completed.".to_string();
-                    status.done = true;
-                    status.success = Some(true);
-                }
-                Ok(exit) => {
-                    status.state = "failed".to_string();
-                    status.message = format!("CLI QR setup exited with status {exit}.");
-                    status.done = true;
-                    status.success = Some(false);
-                }
-                Err(err) => {
-                    status.state = "failed".to_string();
-                    status.message = err.to_string();
-                    status.done = true;
-                    status.success = Some(false);
-                }
-            }
-        }
-    });
-
-    qr_setup_status_from_arc(&status)
+    Err(format!("{} 未实现客户端内扫码绑定。", options.platform))
 }
 
 #[tauri::command]
@@ -1626,26 +1474,89 @@ fn get_qr_setup_status(
 }
 
 #[tauri::command]
-fn save_config(options: ClientOptions) -> Result<String, String> {
-    let rendered = render_config(&options);
-    let config_path = resolve_output_path(&options.config_path);
+fn save_config(app: AppHandle, options: ClientOptions) -> Result<SaveConfigResult, String> {
+    let config_path = write_config_file(&app, &options)?;
+    Ok(SaveConfigResult {
+        message: format!("config saved: {}", config_path.display()),
+        config_path: normalize_display_path(&config_path),
+    })
+}
+
+#[tauri::command]
+fn save_channel_config(
+    app: AppHandle,
+    connection_id: String,
+    platform: String,
+    fields: HashMap<String, String>,
+) -> Result<String, String> {
+    let db = open_client_db(&app)?;
+    upsert_channel_config(
+        &db,
+        &connection_id,
+        &platform.trim().to_lowercase(),
+        &fields,
+    )?;
+    Ok("channel config saved to sqlite".to_string())
+}
+
+#[tauri::command]
+fn save_agent_config(
+    app: AppHandle,
+    connection_id: String,
+    agent_type: String,
+    fields: HashMap<String, String>,
+) -> Result<String, String> {
+    let db = open_client_db(&app)?;
+    upsert_agent_config(
+        &db,
+        &connection_id,
+        &agent_type.trim().to_lowercase(),
+        &fields,
+    )?;
+    Ok("agent config saved to sqlite".to_string())
+}
+
+/// Create a writable config file when none exists yet (install / first-run friendly).
+#[tauri::command]
+fn ensure_config_file(app: AppHandle, options: ClientOptions) -> Result<SaveConfigResult, String> {
+    if let Ok(path) = resolve_config_read_path(&app, &options.config_path) {
+        return Ok(SaveConfigResult {
+            message: format!("config ready: {}", path.display()),
+            config_path: normalize_display_path(&path),
+        });
+    }
+    let config_path = write_config_file(&app, &options)?;
+    Ok(SaveConfigResult {
+        message: format!("config created: {}", config_path.display()),
+        config_path: normalize_display_path(&config_path),
+    })
+}
+
+fn write_config_file(app: &AppHandle, options: &ClientOptions) -> Result<PathBuf, String> {
+    let config_path = resolve_config_write_path(app, &options.config_path)?;
+    let mut options_for_render = options.clone();
+    options_for_render.config_path = normalize_display_path(&config_path);
+    options_for_render.channel_fields = Some(resolved_channel_fields(app, options)?);
+    let rendered = render_config(app, &options_for_render)?;
     if let Some(parent) = config_path.parent() {
         if !parent.as_os_str().is_empty() {
             std::fs::create_dir_all(parent).map_err(|err| err.to_string())?;
         }
     }
     std::fs::write(&config_path, rendered).map_err(|err| err.to_string())?;
-    Ok(format!("config saved: {}", config_path.display()))
+    persist_channel_fields(app, options)?;
+    persist_agent_fields(app, options)?;
+    Ok(config_path)
 }
 
 #[tauri::command]
 fn start_bridge(
+    app: AppHandle,
     options: ClientOptions,
     state: tauri::State<BridgeState>,
 ) -> Result<String, String> {
-    save_config(options.clone())?;
+    let config = write_config_file(&app, &options)?;
     let exe = resolve_exe_path(&options.exe_path)?;
-    let config = resolve_output_path(&options.config_path);
     let mut guard = state.child.lock().map_err(|err| err.to_string())?;
     if let Some(mut child) = guard.take() {
         match child.try_wait().map_err(|err| err.to_string())? {
@@ -1718,10 +1629,6 @@ fn setup_args(options: &ClientOptions) -> Result<Vec<String>, String> {
     setup_args_inner(options, true)
 }
 
-fn setup_args_for_qr(options: &ClientOptions) -> Result<Vec<String>, String> {
-    setup_args_inner(options, false)
-}
-
 fn setup_args_inner(
     options: &ClientOptions,
     include_existing_credentials: bool,
@@ -1772,13 +1679,25 @@ fn setup_args_inner(
     Ok(args)
 }
 
-fn render_config(options: &ClientOptions) -> String {
+fn render_config(app: &AppHandle, options: &ClientOptions) -> Result<String, String> {
     let agent_type = opt_or(&options.agent_type, "codex");
-    let agent_mode = opt_or(&options.agent_mode, "suggest");
-    let agent_command = options.agent_command.as_deref().unwrap_or_default();
-    let fields = options.channel_fields.clone().unwrap_or_default();
+    let agent_fields = resolved_agent_fields(app, options)?;
+    let agent_mode = agent_fields
+        .get("mode")
+        .map(|value| value.as_str())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| opt_or(&options.agent_mode, "suggest"));
+    let agent_command = agent_fields
+        .get("command")
+        .map(|value| value.as_str())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| options.agent_command.as_deref().unwrap_or_default());
+    let fields = options
+        .channel_fields
+        .clone()
+        .unwrap_or_else(|| resolved_channel_fields(app, options).unwrap_or_default());
     let platform_id = options.platform.as_str();
-    let data_dir = config_data_dir(options);
+    let data_dir = config_data_dir(app, options)?;
     let mut out = String::new();
 
     out.push_str(&format!(
@@ -1795,12 +1714,20 @@ fn render_config(options: &ClientOptions) -> String {
     out.push_str("[projects.agent]\n");
     out.push_str(&format!("type = {}\n\n", toml_string(agent_type)));
     out.push_str("[projects.agent.options]\n");
-    out.push_str(&format!("work_dir = {}\n", toml_string(&options.work_dir)));
+    let work_dir = agent_fields
+        .get("workDir")
+        .or_else(|| agent_fields.get("work_dir"))
+        .map(|value| value.as_str())
+        .filter(|value| !value.is_empty())
+        .unwrap_or(options.work_dir.as_str());
+    out.push_str(&format!("work_dir = {}\n", toml_string(work_dir)));
     if agent_type == "codex" {
-        out.push_str(&format!(
-            "backend = {}\n",
-            toml_string(opt_or(&options.agent_backend, "exec"))
-        ));
+        let backend = agent_fields
+            .get("backend")
+            .map(|value| value.as_str())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| opt_or(&options.agent_backend, "exec"));
+        out.push_str(&format!("backend = {}\n", toml_string(backend)));
         out.push_str(&format!("mode = {}\n", toml_string(agent_mode)));
         out.push_str(&format!(
             "codex_bin = {}\n",
@@ -1810,17 +1737,40 @@ fn render_config(options: &ClientOptions) -> String {
                 agent_command
             })
         ));
-        push_optional(&mut out, "model", options.agent_model.as_deref());
+        push_optional(
+            &mut out,
+            "model",
+            agent_fields
+                .get("model")
+                .map(|value| value.as_str())
+                .or(options.agent_model.as_deref()),
+        );
         push_optional(
             &mut out,
             "reasoning_effort",
-            options.reasoning_effort.as_deref(),
+            agent_fields
+                .get("reasoningEffort")
+                .or_else(|| agent_fields.get("reasoning_effort"))
+                .map(|value| value.as_str())
+                .or(options.reasoning_effort.as_deref()),
         );
     } else if agent_type != "mock" {
         push_optional(&mut out, "command", Some(agent_command));
-        push_optional(&mut out, "model", options.agent_model.as_deref());
+        push_optional(
+            &mut out,
+            "model",
+            agent_fields
+                .get("model")
+                .map(|value| value.as_str())
+                .or(options.agent_model.as_deref()),
+        );
         push_optional(&mut out, "mode", Some(agent_mode));
-        let args = lines(options.agent_args.as_deref().unwrap_or_default());
+        let args = lines(
+            agent_fields
+                .get("args")
+                .map(|value| value.as_str())
+                .unwrap_or_else(|| options.agent_args.as_deref().unwrap_or_default()),
+        );
         if !args.is_empty() {
             out.push_str("args = [");
             out.push_str(
@@ -1854,7 +1804,7 @@ fn render_config(options: &ClientOptions) -> String {
         }
     }
 
-    out
+    Ok(out)
 }
 
 fn normalized_platform_fields(
@@ -1966,58 +1916,6 @@ fn agent_option_key(agent_type: &str, key: &str) -> String {
     }
 }
 
-fn record_setup_line(status: &Arc<Mutex<QrSetupStatus>>, line: &str, is_error: bool) {
-    let mut status = match status.lock() {
-        Ok(status) => status,
-        Err(_) => return,
-    };
-    let trimmed = line.trim();
-    if trimmed.is_empty() {
-        return;
-    }
-    let entry = if is_error {
-        format!("stderr: {trimmed}")
-    } else {
-        trimmed.to_string()
-    };
-    status.output.push(entry);
-    if status.output.len() > 300 {
-        status.output.drain(0..100);
-    }
-    if let Some(url) = setup_url_from_line(trimmed) {
-        status.qr_url = Some(url.to_string());
-        status.qr_svg = qr_svg(&url).ok();
-        status.state = "waiting_scan".to_string();
-        status.message = "Scan the QR code in this client window.".to_string();
-        return;
-    }
-    if trimmed.contains("configured") || trimmed.contains("Feishu/Lark configured") {
-        status.state = "writing_config".to_string();
-        status.message = trimmed.to_string();
-    } else if status.qr_url.is_none() {
-        status.message = trimmed.to_string();
-    }
-}
-
-fn setup_url_from_line(line: &str) -> Option<String> {
-    if let Some(url) = line.strip_prefix("URL:").map(str::trim) {
-        if !url.is_empty() {
-            return Some(clean_url(url));
-        }
-    }
-    let start = line.find("https://").or_else(|| line.find("http://"))?;
-    Some(clean_url(&line[start..]))
-}
-
-fn clean_url(value: &str) -> String {
-    value
-        .split_whitespace()
-        .next()
-        .unwrap_or(value)
-        .trim_matches(|ch| matches!(ch, '"' | '\'' | '<' | '>' | ')' | ']' | '}' | ',' | ';'))
-        .to_string()
-}
-
 fn qr_svg(content: &str) -> Result<String, String> {
     let code = qrcode::QrCode::new(content.as_bytes()).map_err(|err| err.to_string())?;
     Ok(code
@@ -2035,6 +1933,7 @@ fn qr_setup_status_from_arc(status: &Arc<Mutex<QrSetupStatus>>) -> Result<QrSetu
 }
 
 async fn start_feishu_qr_setup(
+    app: AppHandle,
     options: ClientOptions,
     state: tauri::State<'_, BridgeState>,
 ) -> Result<QrSetupStatus, String> {
@@ -2084,12 +1983,12 @@ async fn start_feishu_qr_setup(
         session_id: session_id.clone(),
         platform: platform.clone(),
         state: "waiting_scan".to_string(),
-        message: "Scan the QR code in this client window.".to_string(),
+        message: "请在本窗口扫描二维码，并在飞书/Lark 中完成授权确认。".to_string(),
         user_code: Some(begin.user_code.clone()),
         qr_url: Some(qr_url.clone()),
         qr_svg: qr_svg(&qr_url).ok(),
         output: vec![
-            "Feishu/Lark QR setup started inside desktop client.".to_string(),
+            "飞书/Lark 客户端内置扫码绑定已启动。".to_string(),
             format!("User code: {}", begin.user_code),
             format!("URL: {qr_url}"),
         ],
@@ -2104,6 +2003,7 @@ async fn start_feishu_qr_setup(
         .insert(session_id, Arc::clone(&status));
 
     tauri::async_runtime::spawn(poll_feishu_qr_setup(
+        app,
         client,
         accounts_base,
         begin.device_code,
@@ -2116,37 +2016,62 @@ async fn start_feishu_qr_setup(
     qr_setup_status_from_arc(&status)
 }
 
-fn complete_gateway_qr_setup(
+fn start_guided_channel_binding(
+    app: AppHandle,
     options: ClientOptions,
     state: tauri::State<'_, BridgeState>,
 ) -> Result<QrSetupStatus, String> {
-    save_config(options.clone())?;
+    if !platform_supports_guided_setup(&options.platform) {
+        return Err(format!(
+            "{} 不支持配置引导，请直接填写字段并保存。",
+            options.platform
+        ));
+    }
+
+    let binding = channel_binding_status(&app, &options)?;
     let session_id = setup_session_id(&options.platform)?;
-    let message = match options.platform.as_str() {
-        "qq" => "QQ gateway config saved. Open NapCat/LLOneBot and scan the QR code there.",
-        "dingtalk" => {
-            "DingTalk config saved. Open the DingTalk developer console or robot binding page; then fill client_id/client_secret from the platform."
-        }
-        "wecom" => {
-            "WeCom config saved. Open WeCom admin app setup; then fill corp_id/corp_secret/agent_id and callback settings."
-        }
-        _ => "Gateway config saved.",
-    };
-    let qr_url = platform_setup_url(&options.platform);
+    if !binding.ready {
+        let status = Arc::new(Mutex::new(QrSetupStatus {
+            session_id: session_id.clone(),
+            platform: options.platform.clone(),
+            state: "missing_fields".to_string(),
+            message: binding.message.clone(),
+            user_code: None,
+            qr_url: binding.setup_url.clone(),
+            qr_svg: binding
+                .setup_url
+                .as_deref()
+                .and_then(|url| qr_svg(url).ok()),
+            output: vec![binding.message.clone(), binding.next_step.clone()],
+            done: true,
+            success: Some(false),
+        }));
+        state
+            .qr_sessions
+            .lock()
+            .map_err(|err| err.to_string())?
+            .insert(session_id, Arc::clone(&status));
+        return qr_setup_status_from_arc(&status);
+    }
+
+    write_config_file(&app, &options)?;
+    let message = guided_setup_message(&options.platform);
+    let setup_url = platform_setup_url(&options.platform);
     let status = Arc::new(Mutex::new(QrSetupStatus {
         session_id: session_id.clone(),
         platform: options.platform.clone(),
-        state: "external_gateway".to_string(),
+        state: "external_platform".to_string(),
         message: message.to_string(),
         user_code: None,
-        qr_url: qr_url.clone(),
-        qr_svg: qr_url.as_deref().and_then(|url| qr_svg(url).ok()),
+        qr_url: setup_url.clone(),
+        qr_svg: setup_url.as_deref().and_then(|url| qr_svg(url).ok()),
         output: vec![
             message.to_string(),
-            qr_url
+            binding.next_step.clone(),
+            setup_url
                 .as_deref()
-                .map(|url| format!("URL: {url}"))
-                .unwrap_or_else(|| "Open the platform or gateway QR page manually.".to_string()),
+                .map(|url| format!("平台入口: {url}"))
+                .unwrap_or_else(|| "请在对应平台或网关页面完成剩余配置。".to_string()),
         ],
         done: true,
         success: Some(true),
@@ -2160,10 +2085,11 @@ fn complete_gateway_qr_setup(
 }
 
 async fn start_weixin_qr_setup(
+    app: AppHandle,
     options: ClientOptions,
     state: tauri::State<'_, BridgeState>,
 ) -> Result<QrSetupStatus, String> {
-    save_config(options.clone())?;
+    write_config_file(&app, &options)?;
     let session_id = setup_session_id("weixin")?;
     let fields = options.channel_fields.clone().unwrap_or_default();
     let api_base =
@@ -2194,7 +2120,7 @@ async fn start_weixin_qr_setup(
         qr_url: Some(qr_url.clone()),
         qr_svg: qr_svg(&qr_url).ok(),
         output: vec![
-            "Weixin ilink QR setup started inside desktop client.".to_string(),
+            "微信 ilink 客户端内置扫码绑定已启动。".to_string(),
             format!("API: {api_base}"),
             format!("URL: {qr_url}"),
         ],
@@ -2209,6 +2135,7 @@ async fn start_weixin_qr_setup(
         .insert(session_id, Arc::clone(&status));
 
     tauri::async_runtime::spawn(poll_weixin_qr_setup(
+        app,
         client,
         api_base,
         bot_type,
@@ -2222,6 +2149,7 @@ async fn start_weixin_qr_setup(
 }
 
 async fn poll_weixin_qr_setup(
+    app: AppHandle,
     client: reqwest::Client,
     api_base: String,
     bot_type: String,
@@ -2336,12 +2264,13 @@ async fn poll_weixin_qr_setup(
                     );
                 }
                 next_options.channel_fields = Some(fields);
-                match save_config(next_options) {
+                match write_config_file(&app, &next_options) {
                     Ok(path) => finish_qr_setup(
                         &status,
                         true,
                         format!(
-                            "微信扫码绑定完成，配置已保存：{path}。下一步：从微信给机器人发一条消息，用于缓存 context_token。"
+                            "微信扫码绑定完成，配置已保存：{}。下一步：从微信给机器人发一条消息，用于缓存 context_token。",
+                            path.display()
                         ),
                     ),
                     Err(err) => finish_qr_setup(
@@ -2456,6 +2385,7 @@ fn record_weixin_poll(
 }
 
 async fn poll_feishu_qr_setup(
+    app: AppHandle,
     client: reqwest::Client,
     mut accounts_base: String,
     device_code: String,
@@ -2482,7 +2412,7 @@ async fn poll_feishu_qr_setup(
         let poll_value = match poll_value {
             Ok(value) => value,
             Err(err) => {
-                finish_qr_setup(&status, false, format!("QR poll failed: {err}"));
+                finish_qr_setup(&status, false, format!("飞书/Lark 轮询失败：{err}"));
                 return;
             }
         };
@@ -2527,15 +2457,19 @@ async fn poll_feishu_qr_setup(
                 fields.insert("owner_open_id".to_string(), poll.user_info.open_id);
             }
             next_options.channel_fields = Some(fields);
-            match save_config(next_options) {
+            match write_config_file(&app, &next_options) {
                 Ok(path) => {
-                    finish_qr_setup(&status, true, format!("QR setup completed. {path}"));
+                    finish_qr_setup(
+                        &status,
+                        true,
+                        format!("飞书/Lark 扫码绑定完成，配置已保存：{}", path.display()),
+                    );
                 }
                 Err(err) => {
                     finish_qr_setup(
                         &status,
                         false,
-                        format!("QR setup config save failed: {err}"),
+                        format!("飞书/Lark 授权成功，但保存配置失败：{err}"),
                     );
                 }
             }
@@ -2546,11 +2480,15 @@ async fn poll_feishu_qr_setup(
             "" | "authorization_pending" => {}
             "slow_down" => interval += 5,
             "access_denied" => {
-                finish_qr_setup(&status, false, "authorization denied by user".to_string());
+                finish_qr_setup(&status, false, "用户拒绝了飞书/Lark 授权。".to_string());
                 return;
             }
             "expired_token" => {
-                finish_qr_setup(&status, false, "onboarding session expired".to_string());
+                finish_qr_setup(
+                    &status,
+                    false,
+                    "飞书/Lark 扫码会话已过期，请重新扫码。".to_string(),
+                );
                 return;
             }
             other => {
@@ -2568,7 +2506,7 @@ async fn poll_feishu_qr_setup(
     finish_qr_setup(
         &status,
         false,
-        "timed out waiting for QR onboarding result".to_string(),
+        "等待飞书/Lark 扫码授权超时，请重试。".to_string(),
     );
 }
 
@@ -2629,11 +2567,9 @@ fn record_poll_value(
         }
         .to_string();
         status.message = match label {
-            "authorization_pending" => {
-                "Waiting for scan and confirmation in Feishu/Lark.".to_string()
-            }
-            "slow_down" => "Feishu/Lark asked us to slow down polling.".to_string(),
-            "ok" => "Feishu/Lark returned success data, saving config...".to_string(),
+            "authorization_pending" => "等待在飞书/Lark 中扫码并确认授权。".to_string(),
+            "slow_down" => "飞书/Lark 要求降低轮询频率，请稍候。".to_string(),
+            "ok" => "飞书/Lark 授权成功，正在写入配置…".to_string(),
             other => format!("Feishu/Lark poll returned {other}."),
         };
         status
@@ -2660,11 +2596,16 @@ fn setup_session_id(platform: &str) -> Result<String, String> {
     ))
 }
 
+fn platform_supports_auto_qr(platform: &str) -> bool {
+    matches!(platform, "feishu" | "lark" | "weixin")
+}
+
+fn platform_supports_guided_setup(platform: &str) -> bool {
+    matches!(platform, "qq" | "dingtalk" | "wecom")
+}
+
 fn platform_supports_scan(platform: &str) -> bool {
-    matches!(
-        platform,
-        "feishu" | "lark" | "qq" | "weixin" | "dingtalk" | "wecom"
-    )
+    platform_supports_auto_qr(platform) || platform_supports_guided_setup(platform)
 }
 
 fn platform_setup_url(platform: &str) -> Option<String> {
@@ -2675,26 +2616,110 @@ fn platform_setup_url(platform: &str) -> Option<String> {
     }
 }
 
-fn required_fields_ready(platform: &str, fields: &HashMap<String, String>) -> bool {
-    let required: &[&str] = match platform {
+fn required_field_names(platform: &str) -> &'static [&'static str] {
+    match platform {
         "feishu" | "lark" => &["app_id", "app_secret"],
-        "dingtalk" => &["client_id", "client_secret"],
+        "dingtalk" => &["client_id", "client_secret", "robot_code"],
         "telegram" | "discord" | "line" | "max" | "weixin" => &["token"],
         "slack" => &["bot_token", "app_token"],
         "qq" => &["ws_url"],
         "wecom" => &["corp_id", "corp_secret", "agent_id"],
-        "qqbot" | "weibo" => {
-            if non_empty(fields.get("token")).is_some() {
-                return true;
-            }
-            &["app_id", "app_secret"]
-        }
+        "qqbot" | "weibo" => &["app_id", "app_secret"],
         "http" | "bridge" => &["listen"],
         _ => &[],
-    };
-    required
+    }
+}
+
+fn missing_required_fields(platform: &str, fields: &HashMap<String, String>) -> Vec<String> {
+    if matches!(platform, "qqbot" | "weibo") && non_empty(fields.get("token")).is_some() {
+        return Vec::new();
+    }
+    required_field_names(platform)
         .iter()
-        .all(|key| non_empty(fields.get(*key)).is_some())
+        .filter(|key| non_empty(fields.get(**key)).is_none())
+        .map(|key| (*key).to_string())
+        .collect()
+}
+
+fn required_fields_ready(platform: &str, fields: &HashMap<String, String>) -> bool {
+    missing_required_fields(platform, fields).is_empty()
+}
+
+fn channel_binding_status(
+    app: &AppHandle,
+    options: &ClientOptions,
+) -> Result<ChannelBindingStatus, String> {
+    let platform = options.platform.trim().to_lowercase();
+    let fields = resolved_channel_fields(app, options)?;
+    let missing_fields = missing_required_fields(&platform, &fields);
+    let ready = missing_fields.is_empty();
+    let setup_url = platform_setup_url(&platform);
+    let next_step = guided_next_step(&platform);
+    let (state, message) = if ready {
+        (
+            "ready",
+            "必填字段已齐全，可以保存 Channel 配置。".to_string(),
+        )
+    } else if platform_supports_auto_qr(&platform) {
+        (
+            "scan_available",
+            format!(
+                "缺少字段：{}。可先扫码绑定自动写入。",
+                missing_fields.join(", ")
+            ),
+        )
+    } else if platform_supports_guided_setup(&platform) {
+        (
+            "guided_setup",
+            format!(
+                "缺少字段：{}。请先在平台或网关完成配置，再回到这里填写。",
+                missing_fields.join(", ")
+            ),
+        )
+    } else {
+        (
+            "missing_credentials",
+            format!("缺少字段：{}。", missing_fields.join(", ")),
+        )
+    };
+    Ok(ChannelBindingStatus {
+        platform: platform.clone(),
+        state: state.to_string(),
+        message,
+        ready,
+        missing_fields,
+        setup_url,
+        next_step,
+    })
+}
+
+fn guided_next_step(platform: &str) -> String {
+    match platform {
+        "qq" => {
+            "在 NapCat/LLOneBot 等 OneBot 网关中扫码登录 QQ；确认 ws_url 可连接后保存配置并启动 Bridge。"
+                .to_string()
+        }
+        "dingtalk" => {
+            "在钉钉开放平台创建应用并开通机器人，填写 Client ID、Client Secret 和 Robot Code；管理后台二维码不是自动授权码。"
+                .to_string()
+        }
+        "wecom" => {
+            "在企业微信管理后台创建应用或智能机器人，填写 corp_id、corp_secret、agent_id 和回调参数。"
+                .to_string()
+        }
+        _ => "填写完整字段后保存 Channel 配置。".to_string(),
+    }
+}
+
+fn guided_setup_message(platform: &str) -> &'static str {
+    match platform {
+        "qq" => "QQ 网关配置已保存。请在 NapCat/LLOneBot 等网关中扫码登录，不要在本客户端等待自动授权。",
+        "dingtalk" => {
+            "钉钉配置已保存。请在钉钉开放平台核对应用与机器人信息；平台管理页二维码需手动完成应用配置。"
+        }
+        "wecom" => "企业微信配置已保存。请在管理后台完成应用/机器人与回调配置，再启动 Bridge。",
+        _ => "Channel 配置已保存，请按平台说明完成剩余步骤。",
+    }
 }
 
 fn status_text(ready: bool) -> String {
@@ -2704,8 +2729,10 @@ fn status_text(ready: bool) -> String {
 fn binding_status_text(platform: &str, ready: bool) -> String {
     if ready {
         "ready".to_string()
-    } else if platform_supports_scan(platform) {
+    } else if platform_supports_auto_qr(platform) {
         "scan available".to_string()
+    } else if platform_supports_guided_setup(platform) {
+        "guided setup".to_string()
     } else {
         "missing credentials".to_string()
     }
@@ -2852,8 +2879,8 @@ fn command_exists(command: &str) -> bool {
     probe.map(|output| output.status.success()).unwrap_or(false)
 }
 
-fn validate_config_local(options: &ClientOptions) -> Result<String, String> {
-    let config = resolve_output_path(&options.config_path);
+fn validate_config_local(app: &AppHandle, options: &ClientOptions) -> Result<String, String> {
+    let config = resolve_config_read_path(app, &options.config_path)?;
     let raw = std::fs::read_to_string(&config)
         .map_err(|err| format!("failed to read config `{}`: {err}", config.display()))?;
     let parsed = raw
@@ -2884,13 +2911,6 @@ fn validate_config_local(options: &ClientOptions) -> Result<String, String> {
         "local config ok: project `{}`, channel `{}`, agent `{}`",
         options.project, options.platform, agent_type
     ))
-}
-
-fn operation_mode(options: &ClientOptions) -> &str {
-    match options.operation_mode.as_deref().map(str::trim) {
-        Some("cli") => "cli",
-        _ => "api",
-    }
 }
 
 fn field_or_extra(
@@ -2953,15 +2973,6 @@ fn toml_string(value: &str) -> String {
     format!("\"{escaped}\"")
 }
 
-fn run_capture(exe: &str, args: &[&str]) -> Result<String, String> {
-    let mut command = Command::new(exe);
-    command.args(args);
-    #[cfg(windows)]
-    command.creation_flags(CREATE_NO_WINDOW);
-    let output = command.output().map_err(|err| err.to_string())?;
-    output_text(output)
-}
-
 fn run_capture_owned(exe: &str, args: Vec<String>) -> Result<String, String> {
     let mut command = Command::new(exe);
     command.args(args);
@@ -2993,10 +3004,471 @@ fn open_client_db(app: &tauri::AppHandle) -> Result<rusqlite::Connection, String
             id text primary key,
             data text not null,
             updated_at integer not null
+        );
+        create table if not exists channel_configs(
+            connection_id text not null,
+            platform text not null,
+            fields_json text not null,
+            updated_at integer not null default (strftime('%s','now')),
+            primary key (connection_id, platform)
+        );
+        create table if not exists agent_configs(
+            connection_id text not null,
+            agent_type text not null,
+            fields_json text not null,
+            updated_at integer not null default (strftime('%s','now')),
+            primary key (connection_id, agent_type)
+        );
+        create table if not exists connection_settings(
+            connection_id text primary key,
+            name text not null,
+            exe_path text not null,
+            config_path text not null,
+            project text not null,
+            work_dir text not null,
+            selected_channel text not null,
+            selected_agent text not null,
+            updated_at integer not null default (strftime('%s','now'))
         );",
     )
     .map_err(|err| err.to_string())?;
     Ok(db)
+}
+
+fn upsert_channel_config(
+    db: &rusqlite::Connection,
+    connection_id: &str,
+    platform: &str,
+    fields: &HashMap<String, String>,
+) -> Result<(), String> {
+    let fields_json = serde_json::to_string(fields).map_err(|err| err.to_string())?;
+    db.execute(
+        "insert into channel_configs(connection_id, platform, fields_json, updated_at)
+         values(?1, ?2, ?3, strftime('%s','now'))
+         on conflict(connection_id, platform) do update set
+            fields_json = excluded.fields_json,
+            updated_at = excluded.updated_at",
+        (connection_id, platform, fields_json),
+    )
+    .map_err(|err| err.to_string())?;
+    Ok(())
+}
+
+fn load_channel_config(
+    db: &rusqlite::Connection,
+    connection_id: &str,
+    platform: &str,
+) -> Result<HashMap<String, String>, String> {
+    let raw: Option<String> = db
+        .query_row(
+            "select fields_json from channel_configs where connection_id = ?1 and platform = ?2",
+            (connection_id, platform),
+            |row| row.get(0),
+        )
+        .ok();
+    Ok(raw
+        .and_then(|value| serde_json::from_str(&value).ok())
+        .unwrap_or_default())
+}
+
+fn load_all_channel_configs(
+    db: &rusqlite::Connection,
+    connection_id: &str,
+) -> Result<HashMap<String, HashMap<String, String>>, String> {
+    let mut stmt = db
+        .prepare("select platform, fields_json from channel_configs where connection_id = ?1")
+        .map_err(|err| err.to_string())?;
+    let rows = stmt
+        .query_map([connection_id], |row| {
+            let platform: String = row.get(0)?;
+            let fields_json: String = row.get(1)?;
+            Ok((platform, fields_json))
+        })
+        .map_err(|err| err.to_string())?;
+    let mut out = HashMap::new();
+    for row in rows {
+        let (platform, fields_json) = row.map_err(|err| err.to_string())?;
+        if let Ok(fields) = serde_json::from_str::<HashMap<String, String>>(&fields_json) {
+            out.insert(platform, fields);
+        }
+    }
+    Ok(out)
+}
+
+fn sync_channel_configs_from_connections(
+    db: &rusqlite::Connection,
+    connections: &[ClientConnectionState],
+) -> Result<(), String> {
+    for connection in connections {
+        for (platform, fields) in &connection.channel_fields {
+            upsert_channel_config(db, &connection.id, platform, fields)?;
+        }
+    }
+    Ok(())
+}
+
+fn merge_stored_fields(target: &mut HashMap<String, String>, stored: HashMap<String, String>) {
+    for (key, value) in stored {
+        if !value.trim().is_empty() {
+            target.insert(key, value);
+        }
+    }
+}
+
+fn upsert_connection_settings(
+    db: &rusqlite::Connection,
+    connection: &ClientConnectionState,
+) -> Result<(), String> {
+    db.execute(
+        "insert into connection_settings(
+            connection_id, name, exe_path, config_path, project, work_dir,
+            selected_channel, selected_agent, updated_at
+         ) values(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, strftime('%s','now'))
+         on conflict(connection_id) do update set
+            name = excluded.name,
+            exe_path = excluded.exe_path,
+            config_path = excluded.config_path,
+            project = excluded.project,
+            work_dir = excluded.work_dir,
+            selected_channel = excluded.selected_channel,
+            selected_agent = excluded.selected_agent,
+            updated_at = excluded.updated_at",
+        (
+            &connection.id,
+            &connection.name,
+            &connection.exe_path,
+            &connection.config_path,
+            &connection.project,
+            &connection.work_dir,
+            &connection.selected_channel,
+            &connection.selected_agent,
+        ),
+    )
+    .map_err(|err| err.to_string())?;
+    Ok(())
+}
+
+fn load_connection_settings(
+    db: &rusqlite::Connection,
+    connection_id: &str,
+) -> Result<Option<ClientConnectionState>, String> {
+    let row = db.query_row(
+        "select name, exe_path, config_path, project, work_dir, selected_channel, selected_agent
+         from connection_settings where connection_id = ?1",
+        [connection_id],
+        |row| {
+            Ok(ClientConnectionState {
+                id: connection_id.to_string(),
+                name: row.get(0)?,
+                exe_path: row.get(1)?,
+                config_path: row.get(2)?,
+                project: row.get(3)?,
+                work_dir: row.get(4)?,
+                selected_channel: row.get(5)?,
+                selected_agent: row.get(6)?,
+                operation_mode: None,
+                channel_fields: HashMap::new(),
+                agent_fields: HashMap::new(),
+                channel_targets: HashMap::new(),
+                active_target_ids: HashMap::new(),
+                test: serde_json::Value::Null,
+            })
+        },
+    );
+    match row {
+        Ok(value) => Ok(Some(value)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(err) => Err(err.to_string()),
+    }
+}
+
+fn sync_connection_settings_from_connections(
+    db: &rusqlite::Connection,
+    connections: &[ClientConnectionState],
+) -> Result<(), String> {
+    for connection in connections {
+        upsert_connection_settings(db, connection)?;
+    }
+    Ok(())
+}
+
+fn upsert_agent_config(
+    db: &rusqlite::Connection,
+    connection_id: &str,
+    agent_type: &str,
+    fields: &HashMap<String, String>,
+) -> Result<(), String> {
+    let fields_json = serde_json::to_string(fields).map_err(|err| err.to_string())?;
+    db.execute(
+        "insert into agent_configs(connection_id, agent_type, fields_json, updated_at)
+         values(?1, ?2, ?3, strftime('%s','now'))
+         on conflict(connection_id, agent_type) do update set
+            fields_json = excluded.fields_json,
+            updated_at = excluded.updated_at",
+        (connection_id, agent_type, fields_json),
+    )
+    .map_err(|err| err.to_string())?;
+    Ok(())
+}
+
+fn load_agent_config(
+    db: &rusqlite::Connection,
+    connection_id: &str,
+    agent_type: &str,
+) -> Result<HashMap<String, String>, String> {
+    let raw: Option<String> = db
+        .query_row(
+            "select fields_json from agent_configs where connection_id = ?1 and agent_type = ?2",
+            (connection_id, agent_type),
+            |row| row.get(0),
+        )
+        .ok();
+    Ok(raw
+        .and_then(|value| serde_json::from_str(&value).ok())
+        .unwrap_or_default())
+}
+
+fn load_all_agent_configs(
+    db: &rusqlite::Connection,
+    connection_id: &str,
+) -> Result<HashMap<String, HashMap<String, String>>, String> {
+    let mut stmt = db
+        .prepare("select agent_type, fields_json from agent_configs where connection_id = ?1")
+        .map_err(|err| err.to_string())?;
+    let rows = stmt
+        .query_map([connection_id], |row| {
+            let agent_type: String = row.get(0)?;
+            let fields_json: String = row.get(1)?;
+            Ok((agent_type, fields_json))
+        })
+        .map_err(|err| err.to_string())?;
+    let mut out = HashMap::new();
+    for row in rows {
+        let (agent_type, fields_json) = row.map_err(|err| err.to_string())?;
+        if let Ok(fields) = serde_json::from_str::<HashMap<String, String>>(&fields_json) {
+            out.insert(agent_type, fields);
+        }
+    }
+    Ok(out)
+}
+
+fn sync_agent_configs_from_connections(
+    db: &rusqlite::Connection,
+    connections: &[ClientConnectionState],
+) -> Result<(), String> {
+    for connection in connections {
+        for (agent_type, fields) in &connection.agent_fields {
+            upsert_agent_config(db, &connection.id, agent_type, fields)?;
+        }
+    }
+    Ok(())
+}
+
+fn overlay_connections_from_sqlite(
+    db: &rusqlite::Connection,
+    connections: &mut [ClientConnectionState],
+) -> Result<(), String> {
+    for connection in connections.iter_mut() {
+        if let Some(settings) = load_connection_settings(db, &connection.id)? {
+            if !settings.name.trim().is_empty() {
+                connection.name = settings.name;
+            }
+            if !settings.exe_path.trim().is_empty() {
+                connection.exe_path = settings.exe_path;
+            }
+            if !settings.config_path.trim().is_empty() {
+                connection.config_path = settings.config_path;
+            }
+            if !settings.project.trim().is_empty() {
+                connection.project = settings.project;
+            }
+            if !settings.work_dir.trim().is_empty() {
+                connection.work_dir = settings.work_dir;
+            }
+            if !settings.selected_channel.trim().is_empty() {
+                connection.selected_channel = settings.selected_channel;
+            }
+            if !settings.selected_agent.trim().is_empty() {
+                connection.selected_agent = settings.selected_agent;
+            }
+        }
+
+        let stored_channels = load_all_channel_configs(db, &connection.id)?;
+        for (platform, fields) in stored_channels {
+            let entry = connection
+                .channel_fields
+                .entry(platform)
+                .or_insert_with(HashMap::new);
+            merge_stored_fields(entry, fields);
+        }
+
+        let stored_agents = load_all_agent_configs(db, &connection.id)?;
+        for (agent_type, fields) in stored_agents {
+            let entry = connection
+                .agent_fields
+                .entry(agent_type)
+                .or_insert_with(HashMap::new);
+            merge_stored_fields(entry, fields);
+        }
+    }
+    Ok(())
+}
+
+fn channel_fields_from_toml(app: &AppHandle, options: &ClientOptions) -> HashMap<String, String> {
+    let Ok(config_path) = resolve_config_read_path(app, &options.config_path) else {
+        return HashMap::new();
+    };
+    let Ok(raw) = std::fs::read_to_string(config_path) else {
+        return HashMap::new();
+    };
+    let Ok(parsed) = raw.parse::<toml::Value>() else {
+        return HashMap::new();
+    };
+    let Some(project) = find_project(&parsed, &options.project) else {
+        return HashMap::new();
+    };
+    platform_options(project, &options.platform).unwrap_or_default()
+}
+
+fn resolved_channel_fields(
+    app: &AppHandle,
+    options: &ClientOptions,
+) -> Result<HashMap<String, String>, String> {
+    let platform = options.platform.trim().to_lowercase();
+    let mut fields = channel_fields_from_toml(app, options);
+    fields.extend(options.channel_fields.clone().unwrap_or_default());
+    if let Some(connection_id) = options
+        .connection_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        let db = open_client_db(app)?;
+        let stored = load_channel_config(&db, connection_id, &platform)?;
+        fields.extend(stored);
+    }
+    Ok(fields)
+}
+
+fn persist_channel_fields(app: &AppHandle, options: &ClientOptions) -> Result<(), String> {
+    let Some(connection_id) = options
+        .connection_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(());
+    };
+    let fields = resolved_channel_fields(app, options)?;
+    let db = open_client_db(app)?;
+    upsert_channel_config(
+        &db,
+        connection_id,
+        &options.platform.trim().to_lowercase(),
+        &fields,
+    )
+}
+
+fn agent_fields_from_toml(
+    app: &AppHandle,
+    options: &ClientOptions,
+    agent_type: &str,
+) -> HashMap<String, String> {
+    let Ok(config_path) = resolve_config_read_path(app, &options.config_path) else {
+        return HashMap::new();
+    };
+    let Ok(raw) = std::fs::read_to_string(config_path) else {
+        return HashMap::new();
+    };
+    let Ok(parsed) = raw.parse::<toml::Value>() else {
+        return HashMap::new();
+    };
+    let Some(project) = find_project(&parsed, &options.project) else {
+        return HashMap::new();
+    };
+    let Some(agent) = project.get("agent").and_then(toml::Value::as_table) else {
+        return HashMap::new();
+    };
+    if agent
+        .get("type")
+        .and_then(toml::Value::as_str)
+        .unwrap_or("codex")
+        != agent_type
+    {
+        return HashMap::new();
+    }
+    let Some(agent_options) = agent.get("options").and_then(toml::Value::as_table) else {
+        return HashMap::new();
+    };
+    let mut fields = HashMap::new();
+    for (key, value) in agent_options {
+        fields.insert(
+            agent_option_key(agent_type, key),
+            toml_value_to_string(value),
+        );
+    }
+    fields
+}
+
+fn options_agent_fields(options: &ClientOptions) -> HashMap<String, String> {
+    let mut fields = HashMap::new();
+    insert_nonempty_field(&mut fields, "backend", options.agent_backend.as_deref());
+    insert_nonempty_field(&mut fields, "command", options.agent_command.as_deref());
+    insert_nonempty_field(&mut fields, "model", options.agent_model.as_deref());
+    insert_nonempty_field(&mut fields, "mode", options.agent_mode.as_deref());
+    insert_nonempty_field(
+        &mut fields,
+        "reasoningEffort",
+        options.reasoning_effort.as_deref(),
+    );
+    insert_nonempty_field(&mut fields, "args", options.agent_args.as_deref());
+    insert_nonempty_field(
+        &mut fields,
+        "workDir",
+        Some(options.work_dir.as_str()).filter(|value| !value.trim().is_empty()),
+    );
+    fields
+}
+
+fn insert_nonempty_field(fields: &mut HashMap<String, String>, key: &str, value: Option<&str>) {
+    if let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) {
+        fields.insert(key.to_string(), value.to_string());
+    }
+}
+
+fn resolved_agent_fields(
+    app: &AppHandle,
+    options: &ClientOptions,
+) -> Result<HashMap<String, String>, String> {
+    let agent_type = opt_or(&options.agent_type, "codex");
+    let mut fields = agent_fields_from_toml(app, options, agent_type);
+    fields.extend(options_agent_fields(options));
+    if let Some(connection_id) = options
+        .connection_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        let db = open_client_db(app)?;
+        let stored = load_agent_config(&db, connection_id, agent_type)?;
+        fields.extend(stored);
+    }
+    Ok(fields)
+}
+
+fn persist_agent_fields(app: &AppHandle, options: &ClientOptions) -> Result<(), String> {
+    let Some(connection_id) = options
+        .connection_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(());
+    };
+    let agent_type = opt_or(&options.agent_type, "codex");
+    let fields = resolved_agent_fields(app, options)?;
+    let db = open_client_db(app)?;
+    upsert_agent_config(&db, connection_id, agent_type, &fields)
 }
 
 fn client_db_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
@@ -3062,6 +3534,116 @@ fn resolve_output_path(input: &str) -> PathBuf {
         .into_iter()
         .find(|path| path.parent().is_some_and(Path::exists))
         .unwrap_or_else(|| PathBuf::from(input))
+}
+
+fn user_config_path(app: &AppHandle) -> Result<PathBuf, String> {
+    let dir = app.path().app_data_dir().map_err(|err| err.to_string())?;
+    std::fs::create_dir_all(&dir).map_err(|err| err.to_string())?;
+    Ok(dir.join("agentlink.toml"))
+}
+
+fn is_packaged_readonly_path(path: &Path) -> bool {
+    let text = path.to_string_lossy();
+    text.contains(".app/Contents/")
+        || text.contains(".app\\Contents\\")
+        || (text.contains("/Resources/") && text.contains("resources-generated"))
+}
+
+fn directory_is_writable(dir: &Path) -> bool {
+    if dir.as_os_str().is_empty() {
+        return false;
+    }
+    if !dir.exists() {
+        return std::fs::create_dir_all(dir).is_ok();
+    }
+    let probe = dir.join(format!(".agentlink-write-{}", std::process::id()));
+    match std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(&probe)
+    {
+        Ok(_) => {
+            let _ = std::fs::remove_file(probe);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+fn path_is_writable(path: &Path) -> bool {
+    if is_packaged_readonly_path(path) {
+        return false;
+    }
+    let dir = if path.is_dir() {
+        path.to_path_buf()
+    } else {
+        path.parent().unwrap_or(path).to_path_buf()
+    };
+    directory_is_writable(&dir)
+}
+
+fn seed_user_config_from(template: Option<&Path>, user_path: &Path) -> Result<PathBuf, String> {
+    if let Some(parent) = user_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+        }
+    }
+    if !user_path.exists() {
+        if let Some(template) = template.filter(|path| path.is_file()) {
+            std::fs::copy(template, user_path).map_err(|err| err.to_string())?;
+        }
+    }
+    Ok(user_path.to_path_buf())
+}
+
+fn dev_repo_writable_config_path(path: &Path) -> bool {
+    if is_packaged_readonly_path(path) {
+        return false;
+    }
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let Some(repo_root) = manifest_repo_root(&manifest) else {
+        return false;
+    };
+    path.starts_with(&repo_root) && path_is_writable(path)
+}
+
+fn resolve_config_write_path(app: &AppHandle, input: &str) -> Result<PathBuf, String> {
+    let trimmed = input.trim();
+    if !trimmed.is_empty() {
+        let resolved =
+            resolve_existing_path(trimmed).unwrap_or_else(|| resolve_output_path(trimmed));
+        if dev_repo_writable_config_path(&resolved) {
+            return Ok(resolved);
+        }
+    }
+
+    let user_path = user_config_path(app)?;
+    let template = if trimmed.is_empty() {
+        None
+    } else {
+        let resolved =
+            resolve_existing_path(trimmed).unwrap_or_else(|| resolve_output_path(trimmed));
+        resolved.is_file().then_some(resolved)
+    };
+    seed_user_config_from(template.as_deref(), &user_path)
+}
+
+fn resolve_config_read_path(app: &AppHandle, input: &str) -> Result<PathBuf, String> {
+    let user_path = user_config_path(app)?;
+    if user_path.is_file() {
+        return Ok(user_path);
+    }
+
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Err("请先选择或生成配置文件路径。".to_string());
+    }
+
+    let resolved = resolve_existing_path(trimmed)
+        .filter(|path| path.is_file())
+        .ok_or_else(|| format!("config file not found: {trimmed}"))?;
+    Ok(resolved)
 }
 
 fn normalize_input_path(input: &str) -> String {
@@ -3231,6 +3813,58 @@ struct DevDefaultPaths {
     work_dir: String,
 }
 
+fn bundled_agentlink_exe_path(app: &AppHandle) -> Option<PathBuf> {
+    let resource_dir = app.path().resource_dir().ok()?;
+    let names = agentlink_exe_file_names();
+    let profiles = ["release", "debug"];
+    let mut candidates = Vec::new();
+    for profile in profiles {
+        for name in names {
+            candidates.push(
+                resource_dir
+                    .join("resources-generated")
+                    .join("target")
+                    .join(profile)
+                    .join(name),
+            );
+            candidates.push(resource_dir.join("target").join(profile).join(name));
+        }
+    }
+    candidates.into_iter().find(|path| path.is_file())
+}
+
+#[tauri::command]
+fn default_runtime_paths(app: AppHandle) -> DevDefaultPaths {
+    let exe_path = bundled_agentlink_exe_path(&app)
+        .or_else(|| resolve_existing_path(agentlink_exe_file_names()[0]))
+        .map(|path| normalize_display_path(&path))
+        .unwrap_or_else(|| {
+            if cfg!(windows) {
+                "agentlink.exe".to_string()
+            } else {
+                "agentlink".to_string()
+            }
+        });
+
+    let config_path = user_config_path(&app)
+        .map(|path| normalize_display_path(&path))
+        .unwrap_or_default();
+
+    let work_dir = app
+        .path()
+        .home_dir()
+        .ok()
+        .map(|path| normalize_display_path(&path))
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| ".".to_string());
+
+    DevDefaultPaths {
+        exe_path,
+        config_path,
+        work_dir,
+    }
+}
+
 #[tauri::command]
 fn default_dev_paths() -> DevDefaultPaths {
     let exe_path = standard_agentlink_exe_rel_paths()
@@ -3253,6 +3887,74 @@ fn default_dev_paths() -> DevDefaultPaths {
         exe_path,
         config_path,
         work_dir: ".".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod channel_binding_tests {
+    use super::*;
+
+    #[test]
+    fn feishu_required_fields_include_connection_mode_default_on_save_render() {
+        let mut fields = HashMap::from([
+            ("app_id".to_string(), "cli_test".to_string()),
+            ("app_secret".to_string(), "sec_test".to_string()),
+            ("owner_open_id".to_string(), "ou_test".to_string()),
+        ]);
+        fields.insert("connection_mode".to_string(), "websocket".to_string());
+        fields.insert("api_base".to_string(), OPEN_FEISHU_BASE.to_string());
+        assert!(required_fields_ready("feishu", &fields));
+        let rendered = normalized_platform_fields("feishu", &fields);
+        assert_eq!(
+            rendered
+                .iter()
+                .find(|(key, _)| key == "connection_mode")
+                .map(|(_, value)| value.as_str()),
+            Some("websocket")
+        );
+    }
+
+    #[test]
+    fn weixin_poll_status_labels_are_handled() {
+        for status in ["wait", "scaned", "expired", "confirmed"] {
+            assert!(
+                matches!(status, "wait" | "scaned" | "expired" | "confirmed"),
+                "unexpected status {status}"
+            );
+        }
+    }
+
+    #[test]
+    fn guided_platforms_do_not_use_auto_qr() {
+        for platform in ["qq", "dingtalk", "wecom"] {
+            assert!(platform_supports_guided_setup(platform));
+            assert!(!platform_supports_auto_qr(platform));
+        }
+    }
+
+    #[test]
+    fn dingtalk_binding_requires_robot_code() {
+        let fields = HashMap::from([
+            ("client_id".to_string(), "id".to_string()),
+            ("client_secret".to_string(), "secret".to_string()),
+        ]);
+        assert!(!required_fields_ready("dingtalk", &fields));
+        let missing = missing_required_fields("dingtalk", &fields);
+        assert!(missing.contains(&"robot_code".to_string()));
+    }
+
+    #[test]
+    fn packaged_resource_config_is_readonly() {
+        let path = PathBuf::from(
+            "/Applications/AgentLink.app/Contents/Resources/resources-generated/examples/agentlink.all.toml",
+        );
+        assert!(is_packaged_readonly_path(&path));
+    }
+
+    #[test]
+    fn qq_guided_binding_requires_ws_url() {
+        let missing = missing_required_fields("qq", &HashMap::new());
+        assert!(missing.contains(&"ws_url".to_string()));
     }
 }
 
@@ -3481,9 +4183,15 @@ pub fn run() {
             discover_channel_targets,
             start_qr_setup,
             get_qr_setup_status,
+            validate_channel_binding,
+            prepare_channel_binding,
             save_config,
+            ensure_config_file,
+            save_channel_config,
+            save_agent_config,
             inspect_status,
             default_dev_paths,
+            default_runtime_paths,
             validate_config,
             setup_channel,
             launch_qr_setup,

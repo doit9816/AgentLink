@@ -45,8 +45,8 @@ const CHANNELS = [
     id: "dingtalk",
     label: "钉钉",
     kind: "平台绑定",
-    scan: true,
-    summary: "打开钉钉开放平台创建应用，填写 Client ID、Client Secret 和机器人编码。",
+    guided: true,
+    summary: "在钉钉开放平台创建应用并开通机器人，填写 Client ID、Client Secret 和 Robot Code；管理后台二维码不是自动授权码。",
     required: ["client_id", "client_secret"],
     fields: [
       ["client_id", "Client ID", ""],
@@ -90,8 +90,8 @@ const CHANNELS = [
     id: "qq",
     label: "QQ 个人号",
     kind: "扫码网关",
-    scan: true,
-    summary: "通过 NapCat/LLOneBot 等 OneBot v11 网关扫码登录。",
+    guided: true,
+    summary: "通过 NapCat/LLOneBot 等 OneBot v11 网关在网关侧扫码登录；本客户端只配置 ws_url 并给出引导。",
     required: ["ws_url"],
     fields: [
       ["ws_url", "OneBot WebSocket", "ws://127.0.0.1:3001"],
@@ -118,8 +118,8 @@ const CHANNELS = [
     id: "wecom",
     label: "企业微信",
     kind: "管理后台绑定",
-    scan: true,
-    summary: "需要在企业微信管理后台创建应用或机器人，并配置回调参数。",
+    guided: true,
+    summary: "在企业微信管理后台创建应用或机器人，填写 corp_id、corp_secret、agent_id 和回调参数；不是扫管理页二维码即自动授权。",
     required: ["corp_id", "corp_secret", "agent_id"],
     fields: [
       ["corp_id", "Corp ID", ""],
@@ -221,11 +221,26 @@ const AGENTS = [
   { id: "mock", label: "Mock", kind: "测试", command: "" }
 ];
 
+const QR_STATE_LABELS = {
+  idle: "空闲",
+  starting: "启动中",
+  waiting_scan: "等待扫码",
+  waiting_confirm: "等待确认",
+  writing_config: "写入配置",
+  external_platform: "平台侧操作",
+  external_gateway: "平台侧操作",
+  missing_fields: "字段未齐",
+  guided_setup: "配置引导",
+  completed: "已完成",
+  failed: "失败"
+};
+
 const STATUS_LABELS = {
   configured: "已配置",
   missing: "未配置",
   ready: "可用",
   "scan available": "可扫码",
+  "guided setup": "待引导",
   "missing credentials": "缺少密钥",
   installed: "已安装",
   "not found": "未安装",
@@ -255,7 +270,6 @@ const FIELD_HELP = {
 };
 
 const SELECT_HELP = {
-  operationMode: "接口优先会优先使用客户端内置 Rust 接口，减少黑窗；命令行兼容用于直接调用 AgentLink 可执行文件。",
   channelTarget: "接收目标代表一个用户、群或 Webhook。一个接收目标同一时刻只能绑定一个 Agent。",
   receiveIdType: "告诉平台按哪种 ID 发送消息。飞书群通常用 chat_id，私聊可用 open_id；Telegram 用 chat_id。",
   messageType: "测试消息类型。日常调试先用 text，其它类型主要用于验证媒体或原始事件适配。",
@@ -361,7 +375,6 @@ function createConnection(index = 1) {
     configPath: defaultConfigPath(),
     project: index === 1 ? "demo" : `demo-${index}`,
     workDir: DEFAULT_WORK_DIR,
-    operationMode: "api",
     selectedChannel: "feishu",
     selectedAgent: "codex",
     channelFields: initialChannelFields(),
@@ -488,17 +501,31 @@ const updateStateText = computed(() => {
   return "尚未检查";
 });
 const currentTest = computed(() => connection.value.test ?? { messageType: "text", content: "" });
-const canScan = computed(() => Boolean(currentChannel.value.scan));
+const canAutoQrScan = computed(() => Boolean(currentChannel.value.scan));
+const canGuidedSetup = computed(() => Boolean(currentChannel.value.guided));
+const channelBindingHint = ref("");
 const canDirectSendTest = computed(() => DIRECT_SEND_CHANNELS.has(connection.value.selectedChannel));
 const hasReusableChannelConfig = computed(() => Boolean(findReusableChannelFields(connection.value.selectedChannel)));
 const agentReady = computed(() => connection.value.selectedAgent === "mock" || Boolean((currentAgentFields.value.command ?? "").trim()));
 const qrPanelVisible = computed(() => qrSetup.visible && qrSetup.platform === connection.value.selectedChannel);
 const qrHelpText = computed(() => {
-  if (qrSetup.platform === "weixin") return "扫码并在手机上确认后会自动保存 token。之后请先从微信给机器人发一条消息，用于缓存 context_token。";
-  if (qrSetup.platform === "feishu" || qrSetup.platform === "lark") return "扫码后请在飞书/Lark 页面里继续确认创建或授权，下面日志会显示轮询状态。";
-  if (qrSetup.qrUrl) return "该二维码会打开平台绑定或网关配置页面，请按页面提示完成配置。";
-  return "网关型通道的二维码可能由外部网关显示，客户端会展示 setup 结果。";
+  if (qrSetup.platform === "weixin") {
+    return "扫码并在手机上确认后会自动保存 token、account_id 和 api_base。之后请先从微信给机器人发一条消息，用于缓存 context_token。";
+  }
+  if (qrSetup.platform === "feishu" || qrSetup.platform === "lark") {
+    return "扫码后请在飞书/Lark 中确认授权；成功后会写入 app_id、app_secret、connection_mode=websocket、api_base 和 owner_open_id。";
+  }
+  if (qrSetup.state === "missing_fields") return channelBindingHint.value || "请先补全必填字段，再打开配置引导。";
+  if (qrSetup.platform === "qq") {
+    return "QQ 个人号需在 NapCat/LLOneBot 等网关中扫码登录；本客户端不会解析子进程输出，只保存 ws_url 并提供入口链接。";
+  }
+  if (qrSetup.platform === "dingtalk" || qrSetup.platform === "wecom") {
+    return "请在开放平台或管理后台完成应用/机器人配置，再回到这里填写密钥；下方链接仅作跳转，不是自动授权二维码。";
+  }
+  if (qrSetup.qrUrl) return "下方链接用于打开平台或网关配置页面，请按页面说明完成剩余步骤。";
+  return "绑定状态由客户端内置接口返回，请根据提示继续操作。";
 });
+const qrStateLabel = computed(() => QR_STATE_LABELS[qrSetup.state] ?? qrSetup.state);
 const sendTestHelpText = computed(() => {
   if (canDirectSendTest.value) {
     return `当前 ${currentChannel.value.label} 支持客户端直发测试，可直接用下面的目标和内容做联调。`;
@@ -534,6 +561,7 @@ function channelBadge(channel) {
   if (anyChannelReady(channel)) return "可复用";
   if (localChannelReady(channel)) return "已填写";
   if (channel.scan) return "可扫码";
+  if (channel.guided) return "待引导";
   return "待配置";
 }
 
@@ -541,8 +569,8 @@ function channelBadgeClass(channel) {
   const reusable = anyChannelReady(channel);
   return {
     good: channel.id === connection.value.selectedChannel ? status.bindingReady : reusable || localChannelReady(channel),
-    warn: channel.scan && !localChannelReady(channel),
-    bad: !channel.scan && !localChannelReady(channel) && !reusable
+    warn: (channel.scan || channel.guided) && !localChannelReady(channel),
+    bad: !channel.scan && !channel.guided && !localChannelReady(channel) && !reusable
   };
 }
 
@@ -605,7 +633,28 @@ function chooseChannel(channel) {
   ensureTargets(channel.id);
   syncChannelFromConfigured(channel.id, false);
   refreshStatus();
+  refreshChannelBindingHint().catch(() => {
+    channelBindingHint.value = "";
+  });
 }
+
+watch(
+  () => connection.value.channelFields[connection.value.selectedChannel],
+  () => {
+    if (!clientStateLoaded.value) return;
+    persistChannelFieldsToSqlite().catch(() => {});
+  },
+  { deep: true }
+);
+
+watch(
+  () => connection.value.agentFields[connection.value.selectedAgent],
+  () => {
+    if (!clientStateLoaded.value) return;
+    persistAgentFieldsToSqlite().catch(() => {});
+  },
+  { deep: true }
+);
 
 function chooseAgent(agent) {
   connection.value.selectedAgent = agent.id;
@@ -816,7 +865,6 @@ function options() {
     workDir: connection.value.workDir,
     platform: connection.value.selectedChannel,
     extra: "",
-    operationMode: connection.value.operationMode || "api",
     agentType: connection.value.selectedAgent,
     agentBackend: agentFields.backend ?? "",
     agentCommand: agentFields.command ?? "",
@@ -824,8 +872,47 @@ function options() {
     agentMode: agentFields.mode ?? "",
     reasoningEffort: agentFields.reasoningEffort ?? "",
     agentArgs: agentFields.args ?? "",
-    channelFields: { ...currentChannelFields.value }
+    channelFields: { ...currentChannelFields.value },
+    connectionId: connection.value.id
   };
+}
+
+function mergeChannelFields(current, incoming) {
+  const out = { ...(current ?? {}) };
+  for (const [key, value] of Object.entries(incoming ?? {})) {
+    if (String(value ?? "").trim()) {
+      out[key] = String(value).trim();
+    }
+  }
+  return out;
+}
+
+async function persistChannelFieldsToSqlite(channelId = connection.value.selectedChannel) {
+  const fields = connection.value.channelFields[channelId] ?? {};
+  await invoke("save_channel_config", {
+    connectionId: connection.value.id,
+    platform: channelId,
+    fields
+  });
+}
+
+function mergeAgentFields(current, incoming) {
+  const out = { ...(current ?? {}) };
+  for (const [key, value] of Object.entries(incoming ?? {})) {
+    if (String(value ?? "").trim()) {
+      out[key] = String(value).trim();
+    }
+  }
+  return out;
+}
+
+async function persistAgentFieldsToSqlite(agentId = connection.value.selectedAgent) {
+  const fields = connection.value.agentFields[agentId] ?? {};
+  await invoke("save_agent_config", {
+    connectionId: connection.value.id,
+    agentType: agentId,
+    fields
+  });
 }
 
 function appendLog(message) {
@@ -871,6 +958,17 @@ function looksLikeWindowsPath(value) {
   return /^[a-z]:[\\/]/i.test(String(value ?? "").trim());
 }
 
+function looksLikeDevRepoPath(path) {
+  const value = String(path ?? "").trim();
+  if (!value) return false;
+  return (
+    /(^|[\\/])target[\\/](release|debug)[\\/]agentlink(\.exe)?$/i.test(value) ||
+    /(^|[\\/])examples[\\/]agentlink/i.test(value) ||
+    /^target[\\/]/i.test(value) ||
+    /^examples[\\/]/i.test(value)
+  );
+}
+
 function migrateLegacyPath(path) {
   const value = String(path ?? "").trim();
   if (!value) return "";
@@ -890,8 +988,15 @@ function migrateLegacyPath(path) {
       .replace(/(^|[\\/])agentlink-desktop\.exe$/i, "$1agentlink-desktop");
   }
 
-  if (/dist[\\/]agentlink-v[^\\/]+[\\/]examples[\\/]agentlink\.\d+\.toml$/i.test(next) || /examples[\\/]agentlink\.\d+\.toml$/i.test(next)) {
+  if (
+    /dist[\\/]agentlink-v[^\\/]+[\\/]examples[\\/]agentlink/i.test(next) ||
+    /examples[\\/]agentlink/i.test(next)
+  ) {
     next = DEFAULT_CONFIG_PATH;
+  }
+
+  if (!IS_DEV_LAYOUT && looksLikeDevRepoPath(next)) {
+    return "";
   }
 
   return next;
@@ -925,7 +1030,6 @@ function normalizeConnection(item, index) {
     channelTargets,
     activeTargetIds: { ...initialActiveTargetIds(channelTargets), ...(item.activeTargetIds || {}) },
     test: { ...fallback.test, ...(item.test || {}) },
-    operationMode: item.operationMode || "api"
   }, index);
 }
 
@@ -948,10 +1052,15 @@ async function loadClientState() {
         });
       }
       appendLog(`已从 SQLite 加载 ${saved.connections.length} 个连接。`);
+      await ensureProductionPaths();
     } else {
       appendLog("SQLite 暂无连接数据，使用默认连接。");
+      if (!IS_DEV_LAYOUT) {
+        await applyRuntimeDefaults();
+      }
       await saveClientState("初始化本地数据");
     }
+    await ensureConfigFile();
   } catch (error) {
     appendLog(`加载 SQLite 状态失败：${error}`);
   } finally {
@@ -1032,26 +1141,58 @@ async function pickPath(kind) {
   }
 }
 
+async function applyRuntimeDefaults(target = connection.value) {
+  const defaults = IS_DEV_LAYOUT
+    ? await invoke("default_dev_paths")
+    : await invoke("default_runtime_paths");
+  target.exePath = defaults?.exePath || DEFAULT_EXE_PATH;
+  target.configPath = defaults?.configPath || defaultConfigPath();
+  target.workDir = defaults?.workDir || DEFAULT_WORK_DIR;
+  return defaults;
+}
+
+async function ensureProductionPaths() {
+  if (IS_DEV_LAYOUT) return false;
+  const defaults = await invoke("default_runtime_paths");
+  let changed = false;
+  if (!String(connection.value.exePath ?? "").trim() || looksLikeDevRepoPath(connection.value.exePath)) {
+    connection.value.exePath = defaults?.exePath || DEFAULT_EXE_PATH;
+    changed = true;
+  }
+  if (!String(connection.value.configPath ?? "").trim() || looksLikeDevRepoPath(connection.value.configPath)) {
+    connection.value.configPath = defaults?.configPath || "";
+    changed = true;
+  }
+  if (
+    !String(connection.value.workDir ?? "").trim() ||
+    (CURRENT_OS !== "windows" && looksLikeWindowsPath(connection.value.workDir))
+  ) {
+    connection.value.workDir = defaults?.workDir || DEFAULT_WORK_DIR;
+    changed = true;
+  }
+  if (connection.value.agentFields?.codex) {
+    connection.value.agentFields.codex.workDir = connection.value.workDir;
+  }
+  if (changed) {
+    appendLog("已把路径从开发目录切换为安装版默认（内置 AgentLink + 用户配置目录）。");
+    await saveClientState("迁移安装版默认路径");
+  }
+  await ensureConfigFile();
+  return changed;
+}
+
 async function resetDefaultPaths() {
-  if (IS_DEV_LAYOUT) {
-    try {
-      const defaults = await invoke("default_dev_paths");
-      connection.value.exePath = defaults?.exePath || DEFAULT_EXE_PATH;
-      connection.value.configPath = defaults?.configPath || defaultConfigPath();
-      connection.value.workDir = defaults?.workDir || DEFAULT_WORK_DIR;
-    } catch (error) {
-      connection.value.exePath = DEFAULT_EXE_PATH;
-      connection.value.configPath = defaultConfigPath();
-      connection.value.workDir = DEFAULT_WORK_DIR;
-      appendLog(`读取开发态默认路径失败，已回退本地常量：${error}`);
-    }
-  } else {
+  try {
+    await applyRuntimeDefaults();
+  } catch (error) {
     connection.value.exePath = DEFAULT_EXE_PATH;
     connection.value.configPath = defaultConfigPath();
     connection.value.workDir = DEFAULT_WORK_DIR;
+    appendLog(`读取默认路径失败，已回退本地常量：${error}`);
   }
   appendLog(`已恢复${IS_DEV_LAYOUT ? "开发态" : "正式版"}默认路径。`);
   await saveClientState("保存默认路径");
+  await ensureConfigFile();
   await refreshStatus();
 }
 
@@ -1066,7 +1207,11 @@ async function hideToTray() {
 
 async function refreshStatus() {
   try {
-    const next = await invoke("inspect_status", { options: options() });
+    let next = await invoke("inspect_status", { options: options() });
+    if (!next.configExists && clientStateLoaded.value) {
+      await ensureConfigFile();
+      next = await invoke("inspect_status", { options: options() });
+    }
     Object.assign(status, next);
     await refreshBridgeRuntime();
   } catch (error) {
@@ -1239,11 +1384,29 @@ function toggleAutoInstallUpdates() {
   saveClientState("保存升级偏好").catch((error) => appendLog(`保存升级偏好失败：${error}`));
 }
 
+async function applySaveConfigResult(result) {
+  if (result?.configPath) {
+    connection.value.configPath = result.configPath;
+  }
+  await persistChannelFieldsToSqlite();
+  await persistAgentFieldsToSqlite();
+  await invoke("save_client_state", { state: clientStatePayload() });
+  return result?.message || result;
+}
+
+async function ensureConfigFile() {
+  const result = await invoke("ensure_config_file", { options: options() });
+  const message = await applySaveConfigResult(result);
+  if (String(message).includes("created")) {
+    appendLog(`已自动创建配置文件：${result.configPath}`);
+  }
+  return result;
+}
+
 function saveConfig(label = "保存配置") {
   return run(label, async () => {
     const result = await invoke("save_config", { options: options() });
-    await invoke("save_client_state", { state: clientStatePayload() });
-    return result;
+    return applySaveConfigResult(result);
   });
 }
 
@@ -1252,10 +1415,16 @@ function applyConfigSnapshot(snapshot) {
   connection.value.selectedChannel = snapshot.selectedChannel || connection.value.selectedChannel;
   connection.value.selectedAgent = snapshot.selectedAgent || connection.value.selectedAgent;
   if (snapshot.channelFields && connection.value.channelFields[connection.value.selectedChannel]) {
-    Object.assign(connection.value.channelFields[connection.value.selectedChannel], snapshot.channelFields);
+    const channelId = connection.value.selectedChannel;
+    const current = connection.value.channelFields[channelId] ?? {};
+    connection.value.channelFields[channelId] = mergeChannelFields(current, snapshot.channelFields);
+    persistChannelFieldsToSqlite(channelId).catch((error) => appendLog(`同步 Channel 到 SQLite 失败：${error}`));
   }
   if (snapshot.agentFields && connection.value.agentFields[connection.value.selectedAgent]) {
-    Object.assign(connection.value.agentFields[connection.value.selectedAgent], snapshot.agentFields);
+    const agentId = connection.value.selectedAgent;
+    const current = connection.value.agentFields[agentId] ?? {};
+    connection.value.agentFields[agentId] = mergeAgentFields(current, snapshot.agentFields);
+    persistAgentFieldsToSqlite(agentId).catch((error) => appendLog(`同步 Agent 到 SQLite 失败：${error}`));
   }
 }
 
@@ -1347,18 +1516,55 @@ function startQrPolling(sessionId) {
   }, 1500);
 }
 
+async function refreshChannelBindingHint() {
+  try {
+    const binding = await invoke("validate_channel_binding", { options: options() });
+    channelBindingHint.value = binding.nextStep || binding.message || "";
+    return binding;
+  } catch (error) {
+    channelBindingHint.value = "";
+    throw error;
+  }
+}
+
+async function prepareChannelBinding() {
+  return run("配置引导", async () => {
+    const binding = await refreshChannelBindingHint();
+    if (binding.ready) {
+      await applySaveConfigResult(await invoke("save_config", { options: options() }));
+    }
+    const next = await invoke("prepare_channel_binding", { options: options() });
+    applyQrSetupStatus(next);
+    if (!binding.ready) {
+      return binding.message;
+    }
+    return next.message || "配置引导已完成";
+  });
+}
+
 async function scanBind() {
-  if (!canScan.value) {
-    appendLog(`${currentChannel.value.label}: 不支持扫码绑定，请填写密钥或 token。`);
+  if (canGuidedSetup.value) {
+    return prepareChannelBinding();
+  }
+  if (!canAutoQrScan.value) {
+    appendLog(`${currentChannel.value.label}: 不支持客户端内扫码，请填写密钥或 token。`);
     return;
   }
   appendLog(`准备在客户端打开 ${currentChannel.value.label} 扫码绑定...`);
   return run("扫码绑定", async () => {
-    await invoke("save_config", { options: options() });
+    await refreshChannelBindingHint();
+    await applySaveConfigResult(await invoke("save_config", { options: options() }));
     const next = await invoke("start_qr_setup", { options: options() });
     applyQrSetupStatus(next);
     startQrPolling(next.sessionId);
     return "已在客户端打开扫码面板";
+  });
+}
+
+async function validateChannelFields() {
+  return run("校验 Channel", async () => {
+    const binding = await refreshChannelBindingHint();
+    return binding.message;
   });
 }
 
@@ -1372,8 +1578,7 @@ function startBridge() {
     return;
   }
   return run("启动", async () => {
-    await invoke("save_config", { options: options() });
-    await invoke("save_client_state", { state: clientStatePayload() });
+    await applySaveConfigResult(await invoke("save_config", { options: options() }));
     const result = await invoke("start_bridge", { options: options() });
     await refreshBridgeRuntime();
     return result;
@@ -1461,7 +1666,6 @@ watch(
     connection.value.configPath,
     connection.value.project,
     connection.value.workDir,
-    connection.value.operationMode,
     connection.value.selectedChannel,
     connection.value.selectedAgent
   ],
@@ -1617,16 +1821,8 @@ listen("update-download-event", (event) => {
             </label>
           </div>
           <p class="hint">
-            {{ IS_DEV_LAYOUT ? "开发态默认使用仓库里的 target/release 和 examples 相对路径。" : "正式版会优先使用应用内置的 AgentLink CLI；如需改用外部 bridge，可手动选择本机路径。" }}
+            {{ IS_DEV_LAYOUT ? "开发态默认使用仓库里的 target/release 和 examples 相对路径。" : "正式版使用安装包内置的 agentlink，可写配置保存在用户目录（Application Support），不会使用 examples/ 开发路径。" }}
           </p>
-          <label>
-            <span class="label-row">操作方式 <span class="help-dot" :title="SELECT_HELP.operationMode">?</span></span>
-            <select v-model="connection.operationMode">
-              <option value="api">接口优先</option>
-              <option value="cli">命令行兼容</option>
-            </select>
-          </label>
-
           <div class="summary-grid">
             <div class="summary-card">
               <span>当前 Channel</span>
@@ -1713,7 +1909,8 @@ listen("update-download-event", (event) => {
 
           <div class="bind-row">
             <button type="button" class="toggle active">填写密钥</button>
-            <button type="button" class="toggle" :disabled="!canScan" @click="scanBind">扫码绑定</button>
+            <button v-if="canAutoQrScan" type="button" class="toggle" @click="scanBind">扫码绑定</button>
+            <button v-if="canGuidedSetup" type="button" class="toggle" @click="prepareChannelBinding">配置引导</button>
           </div>
 
           <div class="field-grid">
@@ -1730,13 +1927,16 @@ listen("update-download-event", (event) => {
           </div>
 
           <div class="hint">
-            {{ canScan ? "该通道支持扫码绑定。点击后会先保存配置，并在客户端内打开二维码面板。" : "该通道不支持扫码绑定，请填写密钥或 token。" }}
+            <template v-if="canAutoQrScan">该通道支持客户端内扫码。点击「扫码绑定」会先保存配置，并在本窗口显示二维码与轮询状态。</template>
+            <template v-else-if="canGuidedSetup">该通道需在平台或外部网关完成配置。点击「配置引导」会校验字段、保存配置，并给出下一步说明与入口链接（不是自动授权二维码）。</template>
+            <template v-else>请填写下方密钥或 token，保存后可在连接页启动 Bridge。</template>
           </div>
+          <div v-if="channelBindingHint" class="hint">{{ channelBindingHint }}</div>
 
           <section v-if="qrPanelVisible" class="qr-panel">
             <div class="section-head compact-head">
               <div>
-                <h2>扫码绑定</h2>
+                <h2>{{ canGuidedSetup && !canAutoQrScan ? "配置引导" : "扫码绑定" }}</h2>
                 <p>{{ qrSetup.message }}</p>
               </div>
               <button type="button" class="small-button" @click="closeQrPanel">关闭</button>
@@ -1747,7 +1947,7 @@ listen("update-download-event", (event) => {
                 {{ qrSetup.done ? "没有返回二维码" : "正在等待二维码..." }}
               </div>
               <div class="qr-meta">
-                <span class="pill" :class="{ good: qrSetup.success === true, bad: qrSetup.success === false }">{{ qrSetup.state }}</span>
+                <span class="pill" :class="{ good: qrSetup.success === true, bad: qrSetup.success === false }">{{ qrStateLabel }}</span>
                 <strong v-if="qrSetup.userCode" class="user-code">用户码：{{ qrSetup.userCode }}</strong>
                 <a v-if="qrSetup.qrUrl" :href="qrSetup.qrUrl" target="_blank" rel="noreferrer">{{ qrSetup.qrUrl }}</a>
                 <p>{{ qrHelpText }}</p>
@@ -1757,7 +1957,9 @@ listen("update-download-event", (event) => {
           </section>
 
           <div class="action-row">
-            <button type="button" :disabled="!canScan" @click="scanBind">扫码绑定</button>
+            <button v-if="canAutoQrScan" type="button" @click="scanBind">扫码绑定</button>
+            <button v-if="canGuidedSetup" type="button" @click="prepareChannelBinding">配置引导</button>
+            <button type="button" class="secondary" @click="validateChannelFields">校验字段</button>
             <button type="button" class="secondary" :disabled="!hasReusableChannelConfig" @click="reuseChannelConfig">复用已配置 Channel</button>
             <button type="button" @click="saveConfig('保存 Channel')">保存 Channel</button>
             <button type="button" class="secondary" @click="refreshStatus">检测状态</button>
