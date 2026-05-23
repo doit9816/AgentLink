@@ -142,6 +142,11 @@ fn weixin_message_from_item(platform: &WeixinPlatform, item: &Value) -> Result<O
         return Ok(None);
     }
     let msg_id = item.get("message_id").map(value_to_string);
+    let context_token = weixin_context_token(item);
+    let client_id = weixin_string_field(
+        item,
+        &["client_id", "clientId", "ilink_bot_id", "bot_id"],
+    );
     simple_message(
         &platform.config.name,
         format!("{}:{}", platform.config.name, from),
@@ -153,9 +158,32 @@ fn weixin_message_from_item(platform: &WeixinPlatform, item: &Value) -> Result<O
             target: from,
             message_id: msg_id,
             extra: json!({
-                "context_token": item.get("context_token").and_then(Value::as_str).unwrap_or(""),
-                "client_id": item.get("client_id").and_then(Value::as_str).unwrap_or("")
+                "context_token": context_token,
+                "client_id": client_id
             }),
         },
+    )
+}
+
+fn weixin_string_field(item: &Value, keys: &[&str]) -> String {
+    for key in keys {
+        if let Some(value) = item.get(*key).and_then(Value::as_str) {
+            if !value.trim().is_empty() {
+                return value.to_string();
+            }
+        }
+    }
+    String::new()
+}
+
+fn weixin_context_token(item: &Value) -> String {
+    weixin_string_field(
+        item,
+        &[
+            "context_token",
+            "contextToken",
+            "ctx_token",
+            "context",
+        ],
     )
 }

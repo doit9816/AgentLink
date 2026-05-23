@@ -1206,16 +1206,7 @@ async fn send_weixin_direct_message(
     let reply_ctx = opt_target(&request.target.reply_context).ok_or_else(|| {
         "微信测试发送需要先从微信给机器人发一条消息，用发现到的目标缓存 context_token。".to_string()
     })?;
-    let reply_value = serde_json::from_str::<serde_json::Value>(&reply_ctx)
-        .map_err(|err| format!("微信 replyContext 解析失败：{err}"))?;
-    let context_token = json_string(&reply_value, "context_token").unwrap_or_default();
-    let client_id = json_string(&reply_value, "client_id").unwrap_or_default();
-    if context_token.is_empty() {
-        return Err(
-            "微信目标缺少 context_token。请先从微信给机器人发一条新消息，再刷新发现目标。"
-                .to_string(),
-        );
-    }
+    let (context_token, client_id) = weixin_reply_tokens(&reply_ctx)?;
     let body = json!({
         "msg": {
             "to_user_id": to_user_id,
@@ -1413,8 +1404,34 @@ fn discovered_receive_fields(
                 .unwrap_or_default(),
             String::new(),
         ),
+        "weixin" => {
+            let extra = value.get("extra").unwrap_or(&value);
+            let receive_id = json_string(&value, "target")
+                .or_else(|| json_string(extra, "to_user_id"))
+                .unwrap_or_else(|| user_id.to_string());
+            ("user_id".to_string(), receive_id, String::new())
+        }
         _ => ("user_id".to_string(), user_id.to_string(), String::new()),
     }
+}
+
+fn weixin_reply_tokens(reply_ctx: &str) -> Result<(String, String), String> {
+    let value = serde_json::from_str::<serde_json::Value>(reply_ctx)
+        .map_err(|err| format!("微信 replyContext 解析失败：{err}"))?;
+    let extra = value.get("extra").unwrap_or(&value);
+    let context_token = json_string(extra, "context_token")
+        .or_else(|| json_string(&value, "context_token"))
+        .unwrap_or_default();
+    let client_id = json_string(extra, "client_id")
+        .or_else(|| json_string(&value, "client_id"))
+        .unwrap_or_default();
+    if context_token.trim().is_empty() {
+        return Err(
+            "微信目标缺少 context_token。请先从微信给机器人发一条新消息，再刷新发现目标。"
+                .to_string(),
+        );
+    }
+    Ok((context_token, client_id))
 }
 
 fn json_string(value: &serde_json::Value, key: &str) -> Option<String> {
@@ -4149,6 +4166,27 @@ fn default_dev_paths() -> DevDefaultPaths {
         exe_path,
         config_path,
         work_dir: ".".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod weixin_reply_tests {
+    use super::*;
+
+    #[test]
+    fn weixin_reply_tokens_reads_nested_extra_fields() {
+        let reply_ctx = r#"{"channel":"weixin","target":"user@im.wechat","extra":{"context_token":"tok-1","client_id":"cid-1"}}"#;
+        let (token, client_id) = weixin_reply_tokens(reply_ctx).expect("tokens");
+        assert_eq!(token, "tok-1");
+        assert_eq!(client_id, "cid-1");
+    }
+
+    #[test]
+    fn weixin_reply_tokens_supports_flat_legacy_shape() {
+        let reply_ctx = r#"{"context_token":"tok-2","client_id":"cid-2"}"#;
+        let (token, client_id) = weixin_reply_tokens(reply_ctx).expect("tokens");
+        assert_eq!(token, "tok-2");
+        assert_eq!(client_id, "cid-2");
     }
 }
 
