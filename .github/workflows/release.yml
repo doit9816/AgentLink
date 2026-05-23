@@ -1,10 +1,17 @@
 name: Release
 
+# Push a version tag to trigger a full multi-platform desktop release build.
+# Example: git tag v0.1.21 && git push origin v0.1.21
 on:
   push:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to rebuild (e.g. v0.1.21)"
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -15,6 +22,8 @@ jobs:
     runs-on: ${{ matrix.platform }}
     permissions:
       contents: write
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
     strategy:
       fail-fast: false
       matrix:
@@ -55,28 +64,29 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
+          ref: ${{ env.RELEASE_TAG }}
           fetch-depth: 0
 
+      - name: Resolve release version
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${RELEASE_TAG}"
+          if [[ ! "$tag" =~ ^v ]]; then
+            echo "Release tag must start with v: $tag" >&2
+            exit 1
+          fi
+          echo "RELEASE_VERSION=${tag#v}" >> "$GITHUB_ENV"
+
       - name: Verify GitHub release API token
-        if: startsWith(github.ref, 'refs/tags/v')
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh api repos/${{ github.repository }} --jq .full_name
-          gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1 || echo "Release ${GITHUB_REF_NAME} will be created by tauri-action."
-
-      - name: Resolve release version
-        if: startsWith(github.ref, 'refs/tags/v')
-        shell: pwsh
-        run: |
-          if (-not $env:GITHUB_REF_NAME.StartsWith("v")) {
-            throw "Expected tag ref to start with 'v': $env:GITHUB_REF_NAME"
-          }
-
-          $releaseVersion = $env:GITHUB_REF_NAME.Substring(1)
-          "RELEASE_VERSION=$releaseVersion" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          gh api "repos/${{ github.repository }}" --jq .full_name
+          gh release view "${RELEASE_TAG}" >/dev/null 2>&1 \
+            || echo "Release ${RELEASE_TAG} will be created by tauri-action."
 
       - name: Install Linux dependencies
         if: matrix.platform == 'ubuntu-22.04'
@@ -118,14 +128,12 @@ jobs:
         run: npm ci
 
       - name: Sync desktop version from tag
-        if: startsWith(github.ref, 'refs/tags/v')
-        shell: pwsh
-        run: node ./scripts/sync-desktop-version.mjs $env:RELEASE_VERSION
+        shell: bash
+        run: node ./scripts/sync-desktop-version.mjs "$RELEASE_VERSION"
 
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
         env:
-          # Use github.token — a repo secret literally named GITHUB_TOKEN overrides the default and often causes "Bad credentials".
           GITHUB_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN || github.token }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
@@ -134,8 +142,8 @@ jobs:
           owner: ${{ github.repository_owner }}
           repo: ${{ github.event.repository.name }}
           args: ${{ matrix.args }}
-          tagName: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || 'v__VERSION__' }}
-          releaseName: AgentLink v__VERSION__
+          tagName: ${{ env.RELEASE_TAG }}
+          releaseName: AgentLink ${{ env.RELEASE_TAG }}
           releaseBody: |
             Download the installer or bundle for your platform from the assets below.
 
@@ -151,8 +159,6 @@ jobs:
       - name: Package macOS DMG with hdiutil
         if: matrix.updaterTarget == 'darwin'
         shell: bash
-        env:
-          RELEASE_VERSION: ${{ env.RELEASE_VERSION }}
         run: |
           set -euo pipefail
           APP_NAME="AgentLink"
@@ -186,10 +192,10 @@ jobs:
           echo "Created $FINAL_DMG"
 
       - name: Upload macOS DMG to release
-        if: matrix.updaterTarget == 'darwin' && startsWith(github.ref, 'refs/tags/v')
+        if: matrix.updaterTarget == 'darwin'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
+          tag_name: ${{ env.RELEASE_TAG }}
           files: ${{ github.workspace }}/${{ matrix.bundleDir }}/dmg/AgentLink_${{ env.RELEASE_VERSION }}_${{ matrix.dmgArchSuffix }}.dmg
           fail_on_unmatched_files: true
           token: ${{ secrets.RELEASE_GITHUB_TOKEN || github.token }}
@@ -197,8 +203,10 @@ jobs:
   validate-updater-manifest:
     name: Validate latest.json platforms
     needs: build-desktop
-    if: always() && startsWith(github.ref, 'refs/tags/v')
+    if: always()
     runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
     permissions:
       contents: read
     steps:
@@ -211,11 +219,9 @@ jobs:
 
       - name: Ensure latest.json includes macOS updater keys
         shell: bash
-        env:
-          TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          curl -fsSL "https://github.com/doit9816/AgentLink/releases/download/${TAG}/latest.json" -o latest.json
+          curl -fsSL "https://github.com/doit9816/AgentLink/releases/download/${RELEASE_TAG}/latest.json" -o latest.json
           python3 <<'PY'
           import json
           import sys
@@ -235,4 +241,3 @@ jobs:
               sys.exit(1)
           print("latest.json includes required platforms:", ", ".join(required))
           PY
-
