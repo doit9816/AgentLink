@@ -403,12 +403,16 @@ fn inspect_status(app: AppHandle, options: ClientOptions) -> Result<ClientStatus
     let agent_fields = resolved_agent_fields(&app, &options)?;
     let agent_command = agent_fields.get("command").cloned();
     let agent_installed = agent_is_available(agent_type, &agent_command);
+    let (bridge_running, bridge_pid, _, _) = app
+        .try_state::<BridgeState>()
+        .map(|state| reconcile_bridge_runtime(state.inner()))
+        .unwrap_or((false, None, false, "not running".to_string()));
 
     Ok(ClientStatus {
         exe_exists,
         config_exists,
-        bridge_running: false,
-        bridge_pid: None,
+        bridge_running,
+        bridge_pid,
         project_configured,
         channel_configured,
         agent_configured,
@@ -436,33 +440,162 @@ fn inspect_status(app: AppHandle, options: ClientOptions) -> Result<ClientStatus
     })
 }
 
-#[tauri::command]
-fn bridge_runtime_status(state: tauri::State<BridgeState>) -> Result<serde_json::Value, String> {
-    let mut guard = state.child.lock().map_err(|err| err.to_string())?;
-    if let Some(child) = guard.as_mut() {
-        match child.try_wait().map_err(|err| err.to_string())? {
-            Some(status) => {
-                let code = status.code();
-                *guard = None;
-                return Ok(json!({
-                    "running": false,
-                    "pid": null,
-                    "status": format!("exited {:?}", code)
-                }));
+fn bridge_log_dir() -> PathBuf {
+    std::env::temp_dir().join("agentlink-desktop")
+}
+
+fn bridge_pid_file() -> PathBuf {
+    bridge_log_dir().join("bridge.pid")
+}
+
+fn read_bridge_pid_file() -> Option<u32> {
+    let raw = std::fs::read_to_string(bridge_pid_file()).ok()?;
+    let pid = raw.trim().parse::<u32>().ok()?;
+    if pid == 0 {
+        None
+    } else {
+        Some(pid)
+    }
+}
+
+fn write_bridge_pid_file(pid: u32) -> Result<(), String> {
+    std::fs::create_dir_all(bridge_log_dir()).map_err(|err| err.to_string())?;
+    std::fs::write(bridge_pid_file(), pid.to_string()).map_err(|err| err.to_string())
+}
+
+fn clear_bridge_pid_file() {
+    let _ = std::fs::remove_file(bridge_pid_file());
+}
+
+fn is_pid_running(pid: u32) -> bool {
+    if pid == 0 {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
+    }
+    #[cfg(windows)]
+    {
+        let output = Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {pid}"), "/NH"])
+            .output();
+        match output {
+            Ok(output) if output.status.success() => {
+                let text = String::from_utf8_lossy(&output.stdout);
+                text.contains(&pid.to_string())
             }
-            None => {
-                return Ok(json!({
-                    "running": true,
-                    "pid": child.id(),
-                    "status": "running"
-                }));
+            _ => false,
+        }
+    }
+}
+
+fn kill_pid(pid: u32) -> Result<(), String> {
+    if pid == 0 {
+        return Ok(());
+    }
+    #[cfg(unix)]
+    {
+        let status = Command::new("kill")
+            .arg(pid.to_string())
+            .status()
+            .map_err(|err| err.to_string())?;
+        if status.success() {
+            return Ok(());
+        }
+        return Err(format!("无法结束进程 PID {pid}（kill 退出码 {:?}）", status.code()));
+    }
+    #[cfg(windows)]
+    {
+        let status = Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .status()
+            .map_err(|err| err.to_string())?;
+        if status.success() {
+            return Ok(());
+        }
+        return Err(format!(
+            "无法结束进程 PID {pid}（taskkill 退出码 {:?}）",
+            status.code()
+        ));
+    }
+}
+
+fn stop_bridge_processes(state: &BridgeState) -> Result<Option<u32>, String> {
+    let mut stopped_pid = None;
+    let mut guard = state.child.lock().map_err(|err| err.to_string())?;
+    if let Some(mut child) = guard.take() {
+        let pid = child.id();
+        child.kill().map_err(|err| err.to_string())?;
+        stopped_pid = Some(pid);
+    }
+    drop(guard);
+
+    if let Some(pid) = read_bridge_pid_file() {
+        if is_pid_running(pid) {
+            kill_pid(pid)?;
+            stopped_pid = Some(pid);
+        }
+        clear_bridge_pid_file();
+    }
+    Ok(stopped_pid)
+}
+
+fn reconcile_bridge_runtime(state: &BridgeState) -> (bool, Option<u32>, bool, String) {
+    if let Ok(mut guard) = state.child.lock() {
+        if let Some(child) = guard.as_mut() {
+            match child.try_wait() {
+                Ok(None) => {
+                    let pid = child.id();
+                    let _ = write_bridge_pid_file(pid);
+                    return (true, Some(pid), true, "running".to_string());
+                }
+                Ok(Some(status)) => {
+                    *guard = None;
+                    clear_bridge_pid_file();
+                    return (
+                        false,
+                        None,
+                        false,
+                        format!("exited {:?}", status.code()),
+                    );
+                }
+                Err(err) => {
+                    return (false, None, false, format!("status error: {err}"));
+                }
             }
         }
     }
+
+    if let Some(pid) = read_bridge_pid_file() {
+        if is_pid_running(pid) {
+            return (
+                true,
+                Some(pid),
+                false,
+                "running (detached)".to_string(),
+            );
+        }
+        clear_bridge_pid_file();
+    }
+
+    (false, None, false, "not running".to_string())
+}
+
+#[tauri::command]
+fn bridge_runtime_status(state: tauri::State<BridgeState>) -> Result<serde_json::Value, String> {
+    let (running, pid, managed, status) = reconcile_bridge_runtime(&state);
     Ok(json!({
-        "running": false,
-        "pid": null,
-        "status": "not running"
+        "running": running,
+        "pid": pid,
+        "managed": managed,
+        "status": status
     }))
 }
 
@@ -1796,24 +1929,18 @@ fn start_bridge(
     state: tauri::State<BridgeState>,
 ) -> Result<String, String> {
     ensure_channel_ready_for_bridge(&app, &options)?;
-    let config = write_config_file(&app, &options)?;
-    let exe = resolve_exe_path(&app, &options.exe_path)?;
-    let mut guard = state.child.lock().map_err(|err| err.to_string())?;
-    if let Some(mut child) = guard.take() {
-        match child.try_wait().map_err(|err| err.to_string())? {
-            Some(status) => {
-                if !status.success() {
-                    return Err(format!("previous bridge exited with status {status}"));
-                }
-            }
-            None => {
-                *guard = Some(child);
-                return Ok("bridge already running".to_string());
-            }
-        }
+    let (already_running, running_pid, _, _) = reconcile_bridge_runtime(&state);
+    if already_running {
+        let pid = running_pid
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+        return Ok(format!("bridge already running (pid {pid})"));
     }
 
-    let log_dir = std::env::temp_dir().join("agentlink-desktop");
+    let config = write_config_file(&app, &options)?;
+    let exe = resolve_exe_path(&app, &options.exe_path)?;
+
+    let log_dir = bridge_log_dir();
     std::fs::create_dir_all(&log_dir).map_err(|err| err.to_string())?;
     let stdout_path = log_dir.join("agentlink.out.log");
     let stderr_path = log_dir.join("agentlink.err.log");
@@ -1842,13 +1969,31 @@ fn start_bridge(
             .filter(|value| !value.is_empty())
             .collect::<Vec<_>>()
             .join("\n");
-        return Err(format!(
+        let (orphan_running, orphan_pid, _, _) = reconcile_bridge_runtime(&state);
+        if orphan_running {
+            let pid = orphan_pid
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "unknown".to_string());
+            return Ok(format!(
+                "bridge already running (pid {pid}); skipped duplicate start"
+            ));
+        }
+        let mut message = format!(
             "bridge exited immediately with status {status}. config: {}{}{}",
             config.display(),
             if detail.is_empty() { "" } else { "\n" },
             detail
-        ));
+        );
+        if detail.contains("Address already in use") || detail.contains("os error 48") {
+            message.push_str(
+                "\n\n端口已被占用：可能仍有上次启动的 Bridge 在运行。请点击「停止 Bridge」，或结束残留的 agentlink 进程后再试。",
+            );
+        }
+        return Err(message);
     }
+    let pid = child.id();
+    write_bridge_pid_file(pid)?;
+    let mut guard = state.child.lock().map_err(|err| err.to_string())?;
     *guard = Some(child);
     Ok(format!(
         "bridge started with platform {}; config {}; logs {} / {}",
@@ -1861,12 +2006,10 @@ fn start_bridge(
 
 #[tauri::command]
 fn stop_bridge(state: tauri::State<BridgeState>) -> Result<String, String> {
-    let mut guard = state.child.lock().map_err(|err| err.to_string())?;
-    if let Some(mut child) = guard.take() {
-        child.kill().map_err(|err| err.to_string())?;
-        return Ok("bridge stopped".to_string());
+    match stop_bridge_processes(&state)? {
+        Some(pid) => Ok(format!("bridge stopped (pid {pid})")),
+        None => Ok("bridge is not running".to_string()),
     }
-    Ok("bridge is not running".to_string())
 }
 
 fn setup_args(options: &ClientOptions) -> Result<Vec<String>, String> {
@@ -5337,6 +5480,22 @@ mod channel_binding_tests {
 }
 
 #[cfg(test)]
+mod bridge_pid_tests {
+    use super::*;
+
+    #[test]
+    fn bridge_pid_file_round_trip() {
+        clear_bridge_pid_file();
+        let pid = std::process::id();
+        write_bridge_pid_file(pid).expect("write pid");
+        assert_eq!(read_bridge_pid_file(), Some(pid));
+        assert!(is_pid_running(pid));
+        clear_bridge_pid_file();
+        assert_eq!(read_bridge_pid_file(), None);
+    }
+}
+
+#[cfg(test)]
 mod path_resolution_tests {
     use super::*;
 
@@ -5481,11 +5640,7 @@ fn hide_main_window(app: &AppHandle) -> Result<(), String> {
 
 fn quit_app(app: &AppHandle) {
     if let Some(state) = app.try_state::<BridgeState>() {
-        if let Ok(mut guard) = state.child.lock() {
-            if let Some(mut child) = guard.take() {
-                let _ = child.kill();
-            }
-        }
+        let _ = stop_bridge_processes(&state);
     }
     app.exit(0);
 }

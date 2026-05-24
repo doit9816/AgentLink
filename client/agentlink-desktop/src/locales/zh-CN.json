@@ -64,12 +64,14 @@
     "pathNotConfigured": "未配置",
     "pathExists": "存在",
     "pathMissing": "不存在",
-    "bridgePid": "PID: {pid}"
+    "bridgePid": "PID: {pid}",
+    "bridgeDetached": "已启动（PID {pid}，上次会话）"
   },
   "channel": {
     "listTitle": "通道",
     "listDesc": "点击选择聊天渠道。密钥保存在本地数据库，启动 Bridge 时再写入 TOML。",
     "scanBind": "扫码绑定",
+    "cancelScanBind": "取消扫码",
     "rescanBind": "重新扫码绑定",
     "manualKeys": "填写密钥",
     "guidedSetup": "配置引导",

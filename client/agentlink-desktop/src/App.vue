@@ -446,6 +446,7 @@ const status = reactive({
 const bridgeRuntime = reactive({
   running: false,
   pid: null,
+  managed: true,
   status: "not running"
 });
 const updatePreferences = reactive({
@@ -529,14 +530,18 @@ const activeTarget = computed(() => {
 const activeTargetKey = computed(() => targetKey(activeTarget.value));
 const channelTargetOptions = computed(() => collectChannelTargets(connection.value.selectedChannel));
 const activeTargetLock = computed(() => targetLock(activeTargetKey.value));
-const canStartBridge = computed(
-  () =>
-    !bridgeRuntime.running &&
-    !operationRunning.value &&
+const bridgeToggleLabel = computed(() =>
+  bridgeRuntime.running ? t("connect.stopBridge") : t("connect.startBridge")
+);
+const canToggleBridge = computed(() => {
+  if (operationRunning.value) return false;
+  if (bridgeRuntime.running) return true;
+  return (
     !activeTargetLock.value &&
     status.bindingReady &&
     agentReady.value
-);
+  );
+});
 const startBridgeBlockedReason = computed(() => {
   if (bridgeRuntime.running) return "";
   if (activeTargetLock.value) return t("test.targetLockedShort");
@@ -572,9 +577,13 @@ const showManualChannelFields = computed(() => {
   return channelBindMode.value === "manual";
 });
 const showScanBindMode = computed(() => canAutoQrScan.value && channelBindMode.value === "scan");
-const scanBindButtonLabel = computed(() =>
-  status.bindingReady ? t("channel.rescanBind") : t("channel.scanBind")
+const qrBindInProgress = computed(
+  () => qrPanelVisible.value && !qrSetup.done && qrSetup.success !== true
 );
+const scanBindToggleLabel = computed(() => {
+  if (qrBindInProgress.value) return t("channel.cancelScanBind");
+  return status.bindingReady ? t("channel.rescanBind") : t("channel.scanBind");
+});
 const channelBindingHint = ref("");
 const canDirectSendTest = computed(() => DIRECT_SEND_CHANNELS.has(connection.value.selectedChannel));
 const hasReusableChannelConfig = computed(() => Boolean(findReusableChannelFields(connection.value.selectedChannel)));
@@ -731,6 +740,10 @@ function switchToManualBindMode() {
 }
 
 async function handleScanBindToggle() {
+  if (qrBindInProgress.value) {
+    closeQrPanel();
+    return;
+  }
   channelBindMode.value = "scan";
   try {
     await scanBind();
@@ -1390,10 +1403,12 @@ async function refreshBridgeRuntime() {
     const next = await invoke("bridge_runtime_status");
     bridgeRuntime.running = Boolean(next?.running);
     bridgeRuntime.pid = next?.pid ?? null;
+    bridgeRuntime.managed = next?.managed !== false;
     bridgeRuntime.status = next?.status ?? "unknown";
   } catch (error) {
     bridgeRuntime.running = false;
     bridgeRuntime.pid = null;
+    bridgeRuntime.managed = true;
     bridgeRuntime.status = `状态未知：${error}`;
   }
 }
@@ -1760,7 +1775,7 @@ async function scanBind({ silent = false } = {}) {
     return;
   }
   appendLog(`准备在客户端打开 ${currentChannel.value.label} 扫码绑定...`);
-  return run(scanBindButtonLabel.value, task);
+  return run(scanBindToggleLabel.value, task);
 }
 
 async function validateChannelFields() {
@@ -1797,6 +1812,11 @@ function stopBridge() {
     await refreshBridgeRuntime();
     return result;
   });
+}
+
+function toggleBridge() {
+  if (bridgeRuntime.running) return stopBridge();
+  return startBridge();
 }
 
 function refreshBridgeLogs() {
@@ -1918,10 +1938,10 @@ listen("tray-show-about", () => {
   activeTab.value = "about";
 });
 listen("tray-start-bridge", () => {
-  if (!bridgeRuntime.running) startBridge();
+  toggleBridge();
 });
 listen("tray-stop-bridge", () => {
-  if (bridgeRuntime.running) stopBridge();
+  toggleBridge();
 });
 listen("update-download-event", (event) => {
   const payload = event.payload || {};
@@ -2050,16 +2070,24 @@ listen("update-download-event", (event) => {
           </p>
           <div class="summary-grid">
             <div class="summary-card">
-              <span>{{ t('connect.currentChannel') }}</span>
-              <strong>{{ currentChannel.label }}</strong>
-              <em :class="{ good: status.bindingReady, bad: !status.bindingReady }">{{ channelBindingLabel() }}</em>
-              <button type="button" class="link-button" @click="activeTab = 'channel'">{{ t('common.configure') }}</button>
+              <div class="summary-card-body">
+                <span>{{ t('connect.currentChannel') }}</span>
+                <strong>{{ currentChannel.label }}</strong>
+              </div>
+              <div class="summary-card-footer">
+                <em class="summary-status" :class="{ good: status.bindingReady, bad: !status.bindingReady }">{{ channelBindingLabel() }}</em>
+                <button type="button" class="link-button summary-card-action" @click="activeTab = 'channel'">{{ t('common.configure') }}</button>
+              </div>
             </div>
             <div class="summary-card">
-              <span>{{ t('connect.currentAgent') }}</span>
-              <strong>{{ currentAgent.label }}</strong>
-              <em :class="{ good: status.agentInstalled, bad: !status.agentInstalled }">{{ labelStatus(status.agentInstallStatus) }}</em>
-              <button type="button" class="link-button" @click="activeTab = 'agent'">{{ t('common.configure') }}</button>
+              <div class="summary-card-body">
+                <span>{{ t('connect.currentAgent') }}</span>
+                <strong>{{ currentAgent.label }}</strong>
+              </div>
+              <div class="summary-card-footer">
+                <em class="summary-status" :class="{ good: status.agentInstalled, bad: !status.agentInstalled }">{{ labelStatus(status.agentInstallStatus) }}</em>
+                <button type="button" class="link-button summary-card-action" @click="activeTab = 'agent'">{{ t('common.configure') }}</button>
+              </div>
             </div>
           </div>
 
@@ -2071,13 +2099,13 @@ listen("update-download-event", (event) => {
             <button type="button" @click="validateConfig">{{ t('connect.validate') }}</button>
             <button
               type="button"
-              :disabled="!canStartBridge"
-              :title="startBridgeBlockedReason || undefined"
-              @click="startBridge"
+              :class="{ secondary: bridgeRuntime.running }"
+              :disabled="!canToggleBridge"
+              :title="bridgeRuntime.running ? undefined : startBridgeBlockedReason || undefined"
+              @click="toggleBridge"
             >
-              {{ bridgeRuntime.running ? t('connect.bridgeStarted') : t('connect.startBridge') }}
+              {{ bridgeToggleLabel }}
             </button>
-            <button type="button" class="secondary" :disabled="!bridgeRuntime.running || operationRunning" @click="stopBridge">{{ t('connect.stopBridge') }}</button>
           </div>
         </div>
 
@@ -2091,7 +2119,7 @@ listen("update-download-event", (event) => {
 
           <div class="status-grid">
             <div class="state-card"><span>{{ t('connect.stateExe') }}</span><strong :class="pathStateClass('exe')">{{ pathStateLabel('exe') }}</strong></div>
-            <div class="state-card"><span>{{ t('connect.stateBridge') }}</span><strong :class="{ good: bridgeRuntime.running, bad: !bridgeRuntime.running }">{{ bridgeRuntime.running ? t('connect.bridgePid', { pid: bridgeRuntime.pid }) : t('common.notRunning') }}</strong></div>
+            <div class="state-card"><span>{{ t('connect.stateBridge') }}</span><strong :class="{ good: bridgeRuntime.running, bad: !bridgeRuntime.running }">{{ bridgeRuntime.running ? (bridgeRuntime.managed ? t('connect.bridgePid', { pid: bridgeRuntime.pid }) : t('connect.bridgeDetached', { pid: bridgeRuntime.pid })) : t('common.notRunning') }}</strong></div>
             <div class="state-card"><span>{{ t('connect.stateConfig') }}</span><strong :class="pathStateClass('config')">{{ pathStateLabel('config') }}</strong></div>
             <div class="state-card"><span>{{ t('connect.stateProject') }}</span><strong :class="{ good: status.projectConfigured, bad: !status.projectConfigured }">{{ labelStatus(status.connectionStatus) }}</strong></div>
             <div class="state-card"><span>{{ t('connect.stateChannel') }}</span><strong :class="{ good: status.channelConfigured, bad: !status.channelConfigured }">{{ labelStatus(status.channelStatus) }}</strong></div>
@@ -2163,11 +2191,11 @@ listen("update-download-event", (event) => {
               v-if="canAutoQrScan"
               type="button"
               class="toggle"
-              :class="{ active: showScanBindMode }"
-              :disabled="operationRunning"
+              :class="{ active: showScanBindMode || qrBindInProgress }"
+              :disabled="operationRunning && !qrBindInProgress"
               @click="handleScanBindToggle"
             >
-              {{ scanBindButtonLabel }}
+              {{ scanBindToggleLabel }}
             </button>
             <button
               v-if="canAutoQrScan"
@@ -2185,7 +2213,7 @@ listen("update-download-event", (event) => {
           <section v-if="qrPanelVisible" class="qr-panel qr-panel-top">
             <div class="section-head compact-head">
               <div>
-                <h2>{{ showScanBindMode ? scanBindButtonLabel : t('channel.guidedSetup') }}</h2>
+                <h2>{{ showScanBindMode ? scanBindToggleLabel : t('channel.guidedSetup') }}</h2>
                 <p>{{ qrSetup.message }}</p>
               </div>
               <button type="button" class="small-button" @click="closeQrPanel">{{ t('common.close') }}</button>

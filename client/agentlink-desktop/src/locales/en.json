@@ -64,12 +64,14 @@
     "pathNotConfigured": "Not set",
     "pathExists": "Found",
     "pathMissing": "Missing",
-    "bridgePid": "PID: {pid}"
+    "bridgePid": "PID: {pid}",
+    "bridgeDetached": "Running (PID {pid}, previous session)"
   },
   "channel": {
     "listTitle": "Channels",
     "listDesc": "Pick a chat platform. Credentials are stored locally and written to TOML when Bridge starts.",
     "scanBind": "Scan to bind",
+    "cancelScanBind": "Cancel scan",
     "rescanBind": "Scan again",
     "manualKeys": "Enter credentials",
     "guidedSetup": "Setup guide",
