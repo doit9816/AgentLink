@@ -1,10 +1,15 @@
 ﻿<script setup>
 import { computed, nextTick, reactive, ref, watch } from "vue";
+import { useI18n } from "vue-i18n";
 import { getVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { relaunch } from "@tauri-apps/plugin-process";
 import appLogo from "../src-tauri/icons/icon.png";
+import { LOCALE_SYSTEM, resolveLocale, setAppLocale } from "./i18n";
+
+const PRIMARY_CHANNEL_IDS = new Set(["weixin", "feishu", "lark"]);
+const DEV_CHANNEL_IDS = new Set(["http", "bridge"]);
 
 const CHANNELS = [
   {
@@ -44,9 +49,9 @@ const CHANNELS = [
   {
     id: "dingtalk",
     label: "钉钉",
-    kind: "平台绑定",
-    guided: true,
-    summary: "在钉钉开放平台创建应用并开通机器人，填写 Client ID、Client Secret 和 Robot Code；管理后台二维码不是自动授权码。",
+    kind: "扫码/密钥",
+    scan: true,
+    summary: "在钉钉开放平台创建 Stream 机器人应用，填写 Client ID 与 Client Secret 后扫码授权；Robot Code 可留空。",
     required: ["client_id", "client_secret"],
     fields: [
       ["client_id", "Client ID", ""],
@@ -117,9 +122,9 @@ const CHANNELS = [
   {
     id: "wecom",
     label: "企业微信",
-    kind: "管理后台绑定",
-    guided: true,
-    summary: "在企业微信管理后台创建应用或机器人，填写 corp_id、corp_secret、agent_id 和回调参数；不是扫管理页二维码即自动授权。",
+    kind: "扫码/密钥",
+    scan: true,
+    summary: "在企业微信管理后台创建自建应用，填写 corp_id、corp_secret、agent_id 后扫码校验授权；Webhook 仍需配置回调。",
     required: ["corp_id", "corp_secret", "agent_id"],
     fields: [
       ["corp_id", "Corp ID", ""],
@@ -207,6 +212,8 @@ const CHANNELS = [
   }
 ];
 
+const { t } = useI18n();
+
 const AGENTS = [
   { id: "codex", label: "Codex", kind: "内置适配", command: "codex", summary: "支持 exec 和 app-server 后端。" },
   { id: "claude-code", label: "Claude Code", kind: "CLI", command: "claude" },
@@ -220,32 +227,6 @@ const AGENTS = [
   { id: "acp", label: "ACP", kind: "协议入口", command: "acp-agent" },
   { id: "mock", label: "Mock", kind: "测试", command: "" }
 ];
-
-const QR_STATE_LABELS = {
-  idle: "空闲",
-  starting: "启动中",
-  waiting_scan: "等待扫码",
-  waiting_confirm: "等待确认",
-  writing_config: "写入配置",
-  external_platform: "平台侧操作",
-  external_gateway: "平台侧操作",
-  missing_fields: "字段未齐",
-  guided_setup: "配置引导",
-  completed: "已完成",
-  failed: "失败"
-};
-
-const STATUS_LABELS = {
-  configured: "已配置",
-  missing: "未配置",
-  ready: "可用",
-  "scan available": "可扫码",
-  "guided setup": "待引导",
-  "missing credentials": "缺少密钥",
-  installed: "已安装",
-  "not found": "未安装",
-  "built-in": "内置"
-};
 
 const FIELD_HELP = {
   connection_mode: "推荐 websocket。websocket 不需要公网回调地址；webhook 需要平台能访问本机或公网地址。",
@@ -398,6 +379,9 @@ const toasts = reactive([]);
 const activeConnectionId = ref("conn-default");
 const clientStateLoaded = ref(false);
 const targetAdvancedOpen = ref(false);
+const channelAdvancedOpen = ref(false);
+const moreChannelsOpen = ref(false);
+const logPanelOpen = ref(false);
 const channelBindMode = ref("scan");
 const agentChecks = reactive({});
 const qrSetup = reactive({
@@ -455,6 +439,11 @@ const updatePreferences = reactive({
   lastUpdateCheckAt: "",
   lastUpdateError: ""
 });
+const uiPreferences = reactive({
+  locale: null,
+  showAdvancedOptions: false
+});
+const localePreference = ref(LOCALE_SYSTEM);
 const updateStatus = reactive({
   appVersion: "",
   checked: false,
@@ -473,11 +462,48 @@ const updateDialog = reactive({
   body: ""
 });
 
+function withChannelI18n(channel) {
+  if (!channel) return channel;
+  return {
+    ...channel,
+    label: t(`channels.${channel.id}.label`),
+    kind: t(`channels.${channel.id}.kind`),
+    summary: t(`channels.${channel.id}.summary`)
+  };
+}
+
+function withAgentI18n(agent) {
+  if (!agent) return agent;
+  const summaryKey = `agents.${agent.id}.summary`;
+  const summary = t(summaryKey);
+  return {
+    ...agent,
+    label: t(`agents.${agent.id}.label`),
+    kind: t(`agents.${agent.id}.kind`),
+    summary: summary === summaryKey ? agent.summary || t("agents.claude-code.summary") : summary
+  };
+}
+
 const connection = computed(() => {
   return state.connections.find((item) => item.id === activeConnectionId.value) ?? state.connections[0];
 });
-const currentChannel = computed(() => CHANNELS.find((item) => item.id === connection.value.selectedChannel) ?? CHANNELS[0]);
-const currentAgent = computed(() => AGENTS.find((item) => item.id === connection.value.selectedAgent) ?? AGENTS[0]);
+const currentChannel = computed(() =>
+  withChannelI18n(CHANNELS.find((item) => item.id === connection.value.selectedChannel) ?? CHANNELS[0])
+);
+const currentAgent = computed(() =>
+  withAgentI18n(AGENTS.find((item) => item.id === connection.value.selectedAgent) ?? AGENTS[0])
+);
+const showAdvancedOptions = computed(() => uiPreferences.showAdvancedOptions);
+const visibleChannels = computed(() =>
+  CHANNELS.filter((channel) => showAdvancedOptions.value || !DEV_CHANNEL_IDS.has(channel.id)).map(withChannelI18n)
+);
+const primaryChannels = computed(() =>
+  visibleChannels.value.filter((channel) => PRIMARY_CHANNEL_IDS.has(channel.id))
+);
+const moreChannels = computed(() =>
+  visibleChannels.value.filter((channel) => !PRIMARY_CHANNEL_IDS.has(channel.id))
+);
+const displayAgents = computed(() => AGENTS.map(withAgentI18n));
 const currentChannelFields = computed(() => connection.value.channelFields[connection.value.selectedChannel]);
 const currentAgentFields = computed(() => connection.value.agentFields[connection.value.selectedAgent]);
 const currentTargets = computed(() => connection.value.channelTargets?.[connection.value.selectedChannel] ?? []);
@@ -494,54 +520,69 @@ const updateProgressPercent = computed(() => {
   return Math.min(100, Math.round((updateStatus.downloaded / updateStatus.total) * 100));
 });
 const updateStateText = computed(() => {
-  if (updateStatus.installing) return "正在下载并安装";
-  if (updateStatus.installed) return "更新已安装，重启后生效";
-  if (updateStatus.available) return `发现新版本 ${updateStatus.available.version}`;
-  if (updateStatus.error) return "检查更新失败";
-  if (updateStatus.checked) return "已是最新版本";
-  return "尚未检查";
+  if (updateStatus.installing) {
+    return updateProgressPercent.value
+      ? t("update.downloadingPercent", { percent: updateProgressPercent.value })
+      : t("update.downloading");
+  }
+  if (updateStatus.installed) return t("about.relaunch");
+  if (updateStatus.available) return `${t("update.available")} ${updateStatus.available.version}`;
+  if (updateStatus.error) return updateStatus.error;
+  if (updateStatus.checked) return t("status.ready");
+  return "-";
 });
 const currentTest = computed(() => connection.value.test ?? { messageType: "text", content: "" });
 const canAutoQrScan = computed(() => Boolean(currentChannel.value.scan));
 const canGuidedSetup = computed(() => Boolean(currentChannel.value.guided));
+const SCAN_CREDENTIAL_CHANNEL_IDS = new Set(["dingtalk", "wecom"]);
+const showScanCredentialFields = computed(
+  () => showScanBindMode.value && SCAN_CREDENTIAL_CHANNEL_IDS.has(connection.value.selectedChannel)
+);
+const scanCredentialFields = computed(() => {
+  const required = new Set(currentChannel.value.required ?? []);
+  return (currentChannel.value.fields ?? []).filter((field) => required.has(field[0]));
+});
 const showManualChannelFields = computed(() => {
   if (!canAutoQrScan.value) return true;
   return channelBindMode.value === "manual";
 });
 const showScanBindMode = computed(() => canAutoQrScan.value && channelBindMode.value === "scan");
-const scanBindButtonLabel = computed(() => (status.bindingReady ? "重新扫码绑定" : "扫码绑定"));
+const scanBindButtonLabel = computed(() =>
+  status.bindingReady ? t("channel.rescanBind") : t("channel.scanBind")
+);
 const channelBindingHint = ref("");
 const canDirectSendTest = computed(() => DIRECT_SEND_CHANNELS.has(connection.value.selectedChannel));
 const hasReusableChannelConfig = computed(() => Boolean(findReusableChannelFields(connection.value.selectedChannel)));
 const agentReady = computed(() => connection.value.selectedAgent === "mock" || Boolean((currentAgentFields.value.command ?? "").trim()));
 const qrPanelVisible = computed(() => qrSetup.visible && qrSetup.platform === connection.value.selectedChannel);
 const qrHelpText = computed(() => {
-  if (qrSetup.platform === "weixin") {
-    return "扫码并在手机上确认后会自动保存 token、account_id 和 api_base。之后请先从微信给机器人发一条消息，用于缓存 context_token。";
-  }
-  if (qrSetup.platform === "feishu" || qrSetup.platform === "lark") {
-    return "扫码后请在飞书/Lark 中确认授权；成功后会写入 app_id、app_secret、connection_mode=websocket、api_base 和 owner_open_id。";
-  }
-  if (qrSetup.state === "missing_fields") return channelBindingHint.value || "请先补全必填字段，再打开配置引导。";
-  if (qrSetup.platform === "qq") {
-    return "QQ 个人号需在 NapCat/LLOneBot 等网关中扫码登录；本客户端不会解析子进程输出，只保存 ws_url 并提供入口链接。";
-  }
-  if (qrSetup.platform === "dingtalk" || qrSetup.platform === "wecom") {
-    return "请在开放平台或管理后台完成应用/机器人配置，再回到这里填写密钥；下方链接仅作跳转，不是自动授权二维码。";
-  }
-  if (qrSetup.qrUrl) return "下方链接用于打开平台或网关配置页面，请按页面说明完成剩余步骤。";
-  return "绑定状态由客户端内置接口返回，请根据提示继续操作。";
+  if (qrSetup.platform === "weixin") return t("qr.weixinHelp");
+  if (qrSetup.platform === "feishu" || qrSetup.platform === "lark") return t("qr.feishuHelp");
+  if (qrSetup.state === "missing_fields") return channelBindingHint.value || t("qr.missing_fields");
+  if (qrSetup.platform === "qq") return t("qr.qqHelp");
+  if (qrSetup.platform === "dingtalk") return t("qr.dingtalkHelp");
+  if (qrSetup.platform === "wecom") return t("qr.wecomHelp");
+  if (qrSetup.qrUrl) return t("qr.genericHelp");
+  return qrSetup.message || "";
 });
-const qrStateLabel = computed(() => QR_STATE_LABELS[qrSetup.state] ?? qrSetup.state);
+const qrStateLabel = computed(() => {
+  const key = String(qrSetup.state || "idle");
+  const translated = t(`qr.${key}`);
+  return translated === `qr.${key}` ? key : translated;
+});
 const sendTestHelpText = computed(() => {
   if (canDirectSendTest.value) {
-    return `当前 ${currentChannel.value.label} 支持客户端直发测试，可直接用下面的目标和内容做联调。`;
+    return t("test.directSendSupported", { channel: currentChannel.value.label });
   }
-  return `当前 ${currentChannel.value.label} 不支持客户端直发测试。请先启动 Bridge，再从真实聊天渠道发一条消息，或切换到 HTTP 通道做注入测试。`;
+  return t("test.directSendUnsupported", { channel: currentChannel.value.label });
 });
 
 function labelStatus(value) {
-  return STATUS_LABELS[value] ?? value ?? "未知";
+  const raw = String(value ?? "").trim();
+  if (!raw) return "";
+  const key = raw.toLowerCase().replace(/\s+/g, "_");
+  const translated = t(`status.${key}`);
+  return translated === `status.${key}` ? raw : translated;
 }
 
 function fieldHelp(name) {
@@ -563,29 +604,34 @@ function anyChannelReady(channel) {
   return state.connections.some((item) => channelFieldsReady(channel, item.channelFields?.[channel.id] ?? {}));
 }
 
+function channelBindingLabel() {
+  return status.bindingReady ? t("status.ready") : t("status.pending_config");
+}
+
 function channelBadge(channel) {
-  if (channel.id === connection.value.selectedChannel) return labelStatus(status.bindingStatus);
-  if (anyChannelReady(channel)) return "可复用";
-  if (localChannelReady(channel)) return "已填写";
-  if (channel.scan) return "可扫码";
-  if (channel.guided) return "待引导";
-  return "待配置";
+  if (channel.id === connection.value.selectedChannel) return channelBindingLabel();
+  if (anyChannelReady(channel)) return t("status.reusable");
+  if (localChannelReady(channel)) return t("status.filled");
+  return t("status.pending_config");
 }
 
 function channelBadgeClass(channel) {
-  const reusable = anyChannelReady(channel);
+  const selected = channel.id === connection.value.selectedChannel;
+  const configured = anyChannelReady(channel) || localChannelReady(channel);
+  if (selected) {
+    return { good: status.bindingReady, warn: !status.bindingReady };
+  }
   return {
-    good: channel.id === connection.value.selectedChannel ? status.bindingReady : reusable || localChannelReady(channel),
-    warn: (channel.scan || channel.guided) && !localChannelReady(channel),
-    bad: !channel.scan && !channel.guided && !localChannelReady(channel) && !reusable
+    good: configured,
+    warn: !configured
   };
 }
 
 function agentBadge(agent) {
-  if (agent.id === "mock") return "内置";
+  if (agent.id === "mock") return t("status.built_in");
   if (agentChecks[agent.id]) return labelStatus(agentChecks[agent.id].status);
   if (agent.id === connection.value.selectedAgent) return labelStatus(status.agentInstallStatus);
-  return connection.value.agentFields[agent.id]?.command ? "待检测" : "未配置";
+  return connection.value.agentFields[agent.id]?.command ? t("status.pending_check") : t("status.missing");
 }
 
 function agentBadgeClass(agent) {
@@ -640,6 +686,8 @@ function chooseChannel(channel) {
   ensureTargets(channel.id);
   syncChannelFromConfigured(channel.id, false);
   syncChannelBindModeForChannel();
+  channelAdvancedOpen.value =
+    !channel.scan || SCAN_CREDENTIAL_CHANNEL_IDS.has(channel.id);
   refreshStatus().then(() => maybeAutoStartScanBind());
   refreshChannelBindingHint().catch(() => {
     channelBindingHint.value = "";
@@ -652,14 +700,32 @@ function syncChannelBindModeForChannel() {
 
 function switchToManualBindMode() {
   channelBindMode.value = "manual";
+  channelAdvancedOpen.value = true;
   if (qrPanelVisible.value) {
     closeQrPanel();
   }
 }
 
-function handleScanBindToggle() {
+async function handleScanBindToggle() {
   channelBindMode.value = "scan";
-  scanBind();
+  try {
+    await scanBind();
+  } catch (error) {
+    notify("error", t("channel.scanBind"), String(error));
+  }
+}
+
+function openQrPanelPreparing() {
+  qrSetup.visible = true;
+  qrSetup.platform = connection.value.selectedChannel;
+  qrSetup.state = "waiting_scan";
+  qrSetup.message = t("channel.preparingQr");
+  qrSetup.userCode = "";
+  qrSetup.qrUrl = "";
+  qrSetup.qrSvg = "";
+  qrSetup.output = [];
+  qrSetup.done = false;
+  qrSetup.success = null;
 }
 
 async function maybeAutoStartScanBind() {
@@ -799,16 +865,16 @@ function targetKey(target) {
 }
 
 function targetLabel(target) {
-  const name = target?.name || "未命名目标";
-  const value = targetReceiveValue(target) || "未填写接收 ID";
+  const name = target?.name || t("test.unnamedTarget");
+  const value = targetReceiveValue(target) || t("test.missingReceiveId");
   return `${name} · ${target?.receiveIdType || "receive_id"} · ${value}`;
 }
 
 function pathStateLabel(kind) {
   const raw = kind === "exe" ? connection.value.exePath : connection.value.configPath;
-  if (!String(raw ?? "").trim()) return "未配置";
-  if (kind === "exe") return status.exeExists ? "存在" : "不存在";
-  return status.configExists ? "存在" : "不存在";
+  if (!String(raw ?? "").trim()) return t("connect.pathNotConfigured");
+  if (kind === "exe") return status.exeExists ? t("connect.pathExists") : t("connect.pathMissing");
+  return status.configExists ? t("connect.pathExists") : t("connect.pathMissing");
 }
 
 function pathStateClass(kind) {
@@ -981,8 +1047,26 @@ function clientStatePayload() {
   return {
     activeConnectionId: activeConnectionId.value,
     connections: JSON.parse(JSON.stringify(state.connections)),
-    updatePreferences: JSON.parse(JSON.stringify(updatePreferences))
+    updatePreferences: JSON.parse(JSON.stringify(updatePreferences)),
+    uiPreferences: {
+      locale: localePreference.value === LOCALE_SYSTEM ? null : localePreference.value,
+      showAdvancedOptions: uiPreferences.showAdvancedOptions
+    }
   };
+}
+
+function applyLocalePreference(preference = localePreference.value) {
+  const resolved = resolveLocale(preference === LOCALE_SYSTEM ? null : preference);
+  setAppLocale(resolved);
+}
+
+function onLocalePreferenceChange() {
+  applyLocalePreference();
+  saveClientState("保存语言").catch((error) => appendLog(String(error)));
+}
+
+function onShowAdvancedChange() {
+  saveClientState("保存高级选项").catch((error) => appendLog(String(error)));
 }
 
 function looksLikeWindowsPath(value) {
@@ -1082,7 +1166,11 @@ async function loadClientState() {
           lastUpdateError: saved.updatePreferences.lastUpdateError || ""
         });
       }
-      appendLog(`已从 SQLite 加载 ${saved.connections.length} 个连接。`);
+      if (saved.uiPreferences) {
+        uiPreferences.showAdvancedOptions = Boolean(saved.uiPreferences.showAdvancedOptions);
+        localePreference.value = saved.uiPreferences.locale ? saved.uiPreferences.locale : LOCALE_SYSTEM;
+      }
+      appendLog(t("log.ready"));
       await ensureProductionPaths();
     } else {
       appendLog("SQLite 暂无连接数据，使用默认连接。");
@@ -1096,6 +1184,7 @@ async function loadClientState() {
     appendLog(`加载 SQLite 状态失败：${error}`);
   } finally {
     clientStateLoaded.value = true;
+    applyLocalePreference();
     await refreshStatus();
     syncChannelBindModeForChannel();
     await maybeAutoStartScanBind();
@@ -1154,7 +1243,11 @@ async function run(label, task) {
     notify("error", `${label}失败`, error);
     setBusy("error", 4000);
   } finally {
-    await refreshStatus();
+    try {
+      await refreshStatus();
+    } catch (error) {
+      appendLog(`刷新状态失败：${error}`);
+    }
   }
 }
 
@@ -1227,15 +1320,6 @@ async function resetDefaultPaths() {
   await saveClientState("保存默认路径");
   await ensureConfigFile();
   await refreshStatus();
-}
-
-async function hideToTray() {
-  try {
-    await invoke("hide_to_tray");
-  } catch (error) {
-    appendLog(`隐藏到托盘失败：${error}`);
-    notify("error", "隐藏到托盘失败", error);
-  }
 }
 
 async function refreshStatus() {
@@ -1601,12 +1685,18 @@ async function scanBind({ silent = false } = {}) {
   }
   channelBindMode.value = "scan";
   const task = async () => {
+    openQrPanelPreparing();
     await refreshChannelBindingHint();
     await persistChannelFieldsToSqlite();
     await applySaveConfigResult(await invoke("ensure_config_file", { options: options() }));
     const next = await invoke("start_qr_setup", { options: options() });
     applyQrSetupStatus(next);
-    startQrPolling(next.sessionId);
+    if (next?.sessionId && !next.done) {
+      startQrPolling(next.sessionId);
+    }
+    if (next?.state === "missing_fields") {
+      return next.message || "请先填写下方必填字段后再扫码";
+    }
     return status.bindingReady ? "已打开重新扫码面板" : "已在客户端打开扫码面板";
   };
   if (silent) {
@@ -1767,7 +1857,6 @@ watch(() => updatePreferences.autoCheckUpdates, persistSoon);
 watch(() => updatePreferences.autoInstallUpdates, persistSoon);
 
 loadClientState();
-appendLog("客户端已就绪：可以创建多个连接，并分别选择 Channel 与 Agent。");
 
 listen("tray-show-about", () => {
   activeTab.value = "about";
@@ -1796,17 +1885,17 @@ listen("update-download-event", (event) => {
   <main class="shell">
     <div v-if="updateDialog.visible" class="update-dialog-overlay" role="dialog" aria-modal="true" aria-labelledby="update-dialog-title">
       <div class="update-dialog">
-        <h3 id="update-dialog-title">发现新版本</h3>
-        <p class="update-dialog-version">v{{ updateDialog.version }} 已发布，当前版本 v{{ updateStatus.appVersion || "-" }}。</p>
-        <p v-if="updateDialog.date" class="update-dialog-meta">发布时间：{{ updateDialog.date }}</p>
+        <h3 id="update-dialog-title">{{ t('update.available') }}</h3>
+        <p class="update-dialog-version">v{{ updateDialog.version }} · {{ t('about.currentVersion') }} v{{ updateStatus.appVersion || "-" }}</p>
+        <p v-if="updateDialog.date" class="update-dialog-meta">{{ t('update.publishedAt') }}: {{ updateDialog.date }}</p>
         <div v-if="updateDialog.body" class="update-notes">{{ updateDialog.body }}</div>
         <div v-if="updateStatus.installing" class="update-progress">
           <div><span :style="{ width: `${updateProgressPercent || 35}%` }"></span></div>
           <strong>{{ updateProgressPercent ? `正在下载并安装 ${updateProgressPercent}%` : "正在下载并安装" }}</strong>
         </div>
         <div class="action-row">
-          <button type="button" :disabled="updateStatus.installing" @click="installFromUpdateDialog">立即更新</button>
-          <button type="button" class="secondary" :disabled="updateStatus.installing" @click="closeUpdateDialog">稍后</button>
+          <button type="button" :disabled="updateStatus.installing" @click="installFromUpdateDialog">{{ t('update.installNow') }}</button>
+          <button type="button" class="secondary" :disabled="updateStatus.installing" @click="closeUpdateDialog">{{ t('update.later') }}</button>
         </div>
       </div>
     </div>
@@ -1822,12 +1911,18 @@ listen("update-download-event", (event) => {
     </div>
 
     <nav class="tabs" aria-label="主导航">
-      <button type="button" class="tab" :class="{ active: activeTab === 'connect' }" @click="activeTab = 'connect'">连接</button>
-      <button type="button" class="tab" :class="{ active: activeTab === 'channel' }" @click="activeTab = 'channel'">Channel</button>
-      <button type="button" class="tab" :class="{ active: activeTab === 'agent' }" @click="activeTab = 'agent'">Agent</button>
-      <button type="button" class="tab" :class="{ active: activeTab === 'about' }" @click="activeTab = 'about'">关于我们</button>
+      <button type="button" class="tab" :class="{ active: activeTab === 'connect' }" @click="activeTab = 'connect'">{{ t('nav.connect') }}</button>
+      <button type="button" class="tab" :class="{ active: activeTab === 'channel' }" @click="activeTab = 'channel'">{{ t('nav.channel') }}</button>
+      <button type="button" class="tab" :class="{ active: activeTab === 'agent' }" @click="activeTab = 'agent'">{{ t('nav.agent') }}</button>
+      <button type="button" class="tab" :class="{ active: activeTab === 'about' }" @click="activeTab = 'about'">{{ t('nav.about') }}</button>
       <span class="nav-spacer"></span>
-      <button type="button" class="small-button nav-button" @click="hideToTray">隐藏到托盘</button>
+      <label class="nav-locale">
+        <select v-model="localePreference" :aria-label="t('about.language')" @change="onLocalePreferenceChange">
+          <option :value="LOCALE_SYSTEM">{{ t('about.languageSystem') }}</option>
+          <option value="zh-CN">{{ t('about.languageZh') }}</option>
+          <option value="en">{{ t('about.languageEn') }}</option>
+        </select>
+      </label>
       <div v-if="showBusy" class="run-state" :class="busy">{{ busyLabel }}</div>
     </nav>
 
@@ -1836,8 +1931,8 @@ listen("update-download-event", (event) => {
         <div class="panel">
           <div class="section-head">
             <div>
-              <h2>连接列表</h2>
-              <p>每个连接绑定一套项目空间、配置文件、Channel 和 Agent。</p>
+              <h2>{{ t('connect.connectionsTitle') }}</h2>
+              <p>{{ t('connect.connectionsDesc') }}</p>
             </div>
           </div>
 
@@ -1856,90 +1951,90 @@ listen("update-download-event", (event) => {
           </div>
 
           <div class="action-row">
-            <button type="button" @click="addConnection">新建</button>
-            <button type="button" class="secondary" @click="duplicateConnection">复制</button>
-            <button type="button" class="danger" @click="removeConnection">删除</button>
+            <button type="button" @click="addConnection">{{ t('connect.newConnection') }}</button>
+            <button type="button" class="secondary" @click="duplicateConnection">{{ t('connect.duplicateConnection') }}</button>
+            <button type="button" class="danger" @click="removeConnection">{{ t('connect.removeConnection') }}</button>
           </div>
         </div>
 
         <div class="panel">
           <div class="section-head">
             <div>
-              <h2>运行目标</h2>
-              <p>当前连接会使用下面这组 Channel 和 Agent 启动。</p>
+              <h2>{{ t('connect.runtimeTitle') }}</h2>
+              <p>{{ t('connect.runtimeDesc') }}</p>
             </div>
-            <button type="button" class="small-button" @click="refreshStatus">刷新</button>
+            <button type="button" class="small-button" @click="refreshStatus">{{ t('common.refresh') }}</button>
           </div>
 
-          <label>连接名称<input v-model="connection.name" /></label>
-          <label>AgentLink 可执行文件
+          <label>{{ t('connect.connectionName') }}<input v-model="connection.name" /></label>
+          <label>{{ t('connect.exePath') }}
             <div class="input-with-button">
               <input v-model="connection.exePath" />
-              <button type="button" class="small-button" @click="pickPath('exe')">选择</button>
+              <button type="button" class="small-button" @click="pickPath('exe')">{{ t('connect.pickExe') }}</button>
             </div>
           </label>
-          <label>config（可选，启动 Bridge 时自动生成）
+          <label>{{ t('connect.configPath') }}
             <div class="input-with-button">
               <input v-model="connection.configPath" />
-              <button type="button" class="small-button" @click="pickPath('config')">选择</button>
+              <button type="button" class="small-button" @click="pickPath('config')">{{ t('connect.pickConfig') }}</button>
             </div>
           </label>
-          <p class="hint">Channel / Agent 日常保存在本地数据库；只有启动 Bridge 或点「保存配置」时才写入 agentlink.toml。</p>
+          <p class="hint">{{ t('connect.configHint') }}</p>
           <div class="grid form-two">
-            <label>project<input v-model="connection.project" /></label>
-            <label>workspace
+            <label>{{ t('connect.project') }}<input v-model="connection.project" /></label>
+            <label>{{ t('connect.workspace') }}
               <div class="input-with-button">
                 <input v-model="connection.workDir" />
-                <button type="button" class="small-button" @click="pickPath('folder')">选择</button>
+                <button type="button" class="small-button" @click="pickPath('folder')">{{ t('connect.pickFolder') }}</button>
               </div>
             </label>
           </div>
           <p class="hint">
-            {{ IS_DEV_LAYOUT ? "开发态默认使用仓库里的 target/release 和 examples 相对路径。" : "正式版使用安装包内置的 agentlink，可写配置保存在用户目录（Application Support），不会使用 examples/ 开发路径。" }}
+            {{ IS_DEV_LAYOUT ? t('connect.devPathHint') : t('connect.prodPathHint') }}
           </p>
           <div class="summary-grid">
             <div class="summary-card">
-              <span>当前 Channel</span>
+              <span>{{ t('connect.currentChannel') }}</span>
               <strong>{{ currentChannel.label }}</strong>
-              <em :class="{ good: status.bindingReady, bad: !status.bindingReady }">{{ labelStatus(status.bindingStatus) }}</em>
-              <button type="button" class="link-button" @click="activeTab = 'channel'">去配置</button>
+              <em :class="{ good: status.bindingReady, bad: !status.bindingReady }">{{ channelBindingLabel() }}</em>
+              <button type="button" class="link-button" @click="activeTab = 'channel'">{{ t('common.configure') }}</button>
             </div>
             <div class="summary-card">
-              <span>当前 Agent</span>
+              <span>{{ t('connect.currentAgent') }}</span>
               <strong>{{ currentAgent.label }}</strong>
               <em :class="{ good: status.agentInstalled, bad: !status.agentInstalled }">{{ labelStatus(status.agentInstallStatus) }}</em>
-              <button type="button" class="link-button" @click="activeTab = 'agent'">去配置</button>
+              <button type="button" class="link-button" @click="activeTab = 'agent'">{{ t('common.configure') }}</button>
             </div>
           </div>
 
           <div class="action-row">
-            <button type="button" class="secondary" @click="resetDefaultPaths">使用默认路径</button>
-            <button type="button" @click="saveConfig()">保存配置</button>
-            <button type="button" class="secondary" @click="saveLocalState">保存本地数据</button>
-            <button type="button" class="secondary" @click="loadConfigFromFile">读取配置</button>
-            <button type="button" @click="validateConfig">校验</button>
-            <button type="button" :disabled="!canStartBridge" @click="startBridge">{{ bridgeRuntime.running ? "已启动" : "启动" }}</button>
-            <button type="button" class="secondary" :disabled="!bridgeRuntime.running || operationRunning" @click="stopBridge">停止</button>
+            <button type="button" class="secondary" @click="resetDefaultPaths">{{ t('connect.resetDefaultPaths') }}</button>
+            <button type="button" @click="saveConfig()">{{ t('connect.saveConfig') }}</button>
+            <button type="button" class="secondary" @click="saveLocalState">{{ t('connect.saveLocal') }}</button>
+            <button type="button" class="secondary" @click="loadConfigFromFile">{{ t('connect.loadConfig') }}</button>
+            <button type="button" @click="validateConfig">{{ t('connect.validate') }}</button>
+            <button type="button" :disabled="!canStartBridge" @click="startBridge">{{ bridgeRuntime.running ? t('connect.bridgeStarted') : t('connect.startBridge') }}</button>
+            <button type="button" class="secondary" :disabled="!bridgeRuntime.running || operationRunning" @click="stopBridge">{{ t('connect.stopBridge') }}</button>
           </div>
         </div>
 
         <div class="panel status-panel">
           <div class="section-head">
             <div>
-              <h2>状态</h2>
+              <h2>{{ t('connect.statusTitle') }}</h2>
               <p>{{ status.summary }}</p>
             </div>
           </div>
 
           <div class="status-grid">
-            <div class="state-card"><span>AgentLink 可执行文件</span><strong :class="pathStateClass('exe')">{{ pathStateLabel('exe') }}</strong></div>
-            <div class="state-card"><span>Bridge 运行</span><strong :class="{ good: bridgeRuntime.running, bad: !bridgeRuntime.running }">{{ bridgeRuntime.running ? `PID: ${bridgeRuntime.pid}` : "未启动" }}</strong></div>
-            <div class="state-card"><span>config</span><strong :class="pathStateClass('config')">{{ pathStateLabel('config') }}</strong></div>
-            <div class="state-card"><span>project</span><strong :class="{ good: status.projectConfigured, bad: !status.projectConfigured }">{{ labelStatus(status.connectionStatus) }}</strong></div>
-            <div class="state-card"><span>channel</span><strong :class="{ good: status.channelConfigured, bad: !status.channelConfigured }">{{ labelStatus(status.channelStatus) }}</strong></div>
-            <div class="state-card"><span>agent 配置</span><strong :class="{ good: status.agentConfigured, bad: !status.agentConfigured }">{{ labelStatus(status.agentStatus) }}</strong></div>
-            <div class="state-card"><span>agent 安装</span><strong :class="{ good: status.agentInstalled, bad: !status.agentInstalled }">{{ labelStatus(status.agentInstallStatus) }}</strong></div>
-            <div class="state-card"><span>绑定</span><strong :class="{ good: status.bindingReady, bad: !status.bindingReady }">{{ labelStatus(status.bindingStatus) }}</strong></div>
+            <div class="state-card"><span>{{ t('connect.stateExe') }}</span><strong :class="pathStateClass('exe')">{{ pathStateLabel('exe') }}</strong></div>
+            <div class="state-card"><span>{{ t('connect.stateBridge') }}</span><strong :class="{ good: bridgeRuntime.running, bad: !bridgeRuntime.running }">{{ bridgeRuntime.running ? t('connect.bridgePid', { pid: bridgeRuntime.pid }) : t('common.notRunning') }}</strong></div>
+            <div class="state-card"><span>{{ t('connect.stateConfig') }}</span><strong :class="pathStateClass('config')">{{ pathStateLabel('config') }}</strong></div>
+            <div class="state-card"><span>{{ t('connect.stateProject') }}</span><strong :class="{ good: status.projectConfigured, bad: !status.projectConfigured }">{{ labelStatus(status.connectionStatus) }}</strong></div>
+            <div class="state-card"><span>{{ t('connect.stateChannel') }}</span><strong :class="{ good: status.channelConfigured, bad: !status.channelConfigured }">{{ labelStatus(status.channelStatus) }}</strong></div>
+            <div class="state-card"><span>{{ t('connect.stateAgentConfig') }}</span><strong :class="{ good: status.agentConfigured, bad: !status.agentConfigured }">{{ labelStatus(status.agentStatus) }}</strong></div>
+            <div class="state-card"><span>{{ t('connect.stateAgentInstall') }}</span><strong :class="{ good: status.agentInstalled, bad: !status.agentInstalled }">{{ labelStatus(status.agentInstallStatus) }}</strong></div>
+            <div class="state-card"><span>{{ t('connect.stateBinding') }}</span><strong :class="{ good: status.bindingReady, bad: !status.bindingReady }">{{ channelBindingLabel() }}</strong></div>
           </div>
         </div>
 
@@ -1951,25 +2046,44 @@ listen("update-download-event", (event) => {
         <div class="panel">
           <div class="section-head">
             <div>
-              <h2>Channel</h2>
-              <p>点击选择聊天渠道。密钥保存在本地数据库，启动 Bridge 时再写入 TOML。</p>
+              <h2>{{ t('channel.listTitle') }}</h2>
+              <p>{{ t('channel.listDesc') }}</p>
             </div>
-            <span class="pill">{{ currentChannel.id }}</span>
           </div>
+
+          <h3 class="channel-group-title">{{ t('channel.primaryGroup') }}</h3>
           <div class="select-list channel-list">
             <button
-              v-for="channel in CHANNELS"
+              v-for="channel in primaryChannels"
               :key="channel.id"
               type="button"
               class="select-card"
               :class="{ active: connection.selectedChannel === channel.id }"
-              @click="chooseChannel(channel)"
+              @click="chooseChannel(CHANNELS.find((item) => item.id === channel.id))"
             >
               <strong>{{ channel.label }}</strong>
               <span>{{ channel.kind }}</span>
               <em class="badge" :class="channelBadgeClass(channel)">{{ channelBadge(channel) }}</em>
             </button>
           </div>
+
+          <details v-if="moreChannels.length" class="channel-group-details" :open="moreChannelsOpen" @toggle="moreChannelsOpen = $event.target.open">
+            <summary>{{ t('channel.moreGroup') }} ({{ moreChannels.length }})</summary>
+            <div class="select-list channel-list">
+              <button
+                v-for="channel in moreChannels"
+                :key="channel.id"
+                type="button"
+                class="select-card"
+                :class="{ active: connection.selectedChannel === channel.id }"
+                @click="chooseChannel(CHANNELS.find((item) => item.id === channel.id))"
+              >
+                <strong>{{ channel.label }}</strong>
+                <span>{{ channel.kind }}</span>
+                <em class="badge" :class="channelBadgeClass(channel)">{{ channelBadge(channel) }}</em>
+              </button>
+            </div>
+          </details>
         </div>
 
         <div class="panel">
@@ -1978,8 +2092,21 @@ listen("update-download-event", (event) => {
               <h2>{{ currentChannel.label }}</h2>
               <p>{{ currentChannel.summary }}</p>
             </div>
-            <span class="pill" :class="{ good: status.bindingReady, bad: !status.bindingReady }">{{ labelStatus(status.bindingStatus) }}</span>
+            <span class="pill" :class="{ good: status.bindingReady, bad: !status.bindingReady }">{{ channelBindingLabel() }}</span>
           </div>
+
+          <section v-if="showScanCredentialFields" class="scan-credential-box">
+            <p class="scan-credential-hint">{{ t('channel.fillBeforeScan') }}</p>
+            <div class="field-grid">
+              <label v-for="field in scanCredentialFields" :key="field[0]">
+                <span class="label-row">
+                  {{ field[1] }}
+                  <span v-if="fieldHelp(field[0])" class="help-dot" :title="fieldHelp(field[0])">?</span>
+                </span>
+                <input :type="field[3] || 'text'" v-model="currentChannelFields[field[0]]" />
+              </label>
+            </div>
+          </section>
 
           <div v-if="canAutoQrScan || canGuidedSetup" class="bind-row">
             <button
@@ -1987,6 +2114,7 @@ listen("update-download-event", (event) => {
               type="button"
               class="toggle"
               :class="{ active: showScanBindMode }"
+              :disabled="operationRunning"
               @click="handleScanBindToggle"
             >
               {{ scanBindButtonLabel }}
@@ -1996,144 +2124,152 @@ listen("update-download-event", (event) => {
               type="button"
               class="toggle"
               :class="{ active: showManualChannelFields }"
+              :disabled="operationRunning"
               @click="switchToManualBindMode"
             >
-              填写密钥
+              {{ t('channel.manualKeys') }}
             </button>
-            <button v-if="canGuidedSetup && !canAutoQrScan" type="button" class="toggle" @click="prepareChannelBinding">配置引导</button>
+            <button v-if="canGuidedSetup && !canAutoQrScan" type="button" class="toggle" @click="prepareChannelBinding">{{ t('channel.guidedSetup') }}</button>
           </div>
 
-          <section v-if="showScanBindMode && qrPanelVisible" class="qr-panel qr-panel-top">
+          <section v-if="qrPanelVisible" class="qr-panel qr-panel-top">
             <div class="section-head compact-head">
               <div>
-                <h2>{{ scanBindButtonLabel }}</h2>
+                <h2>{{ showScanBindMode ? scanBindButtonLabel : t('channel.guidedSetup') }}</h2>
                 <p>{{ qrSetup.message }}</p>
               </div>
-              <button type="button" class="small-button" @click="closeQrPanel">关闭</button>
+              <button type="button" class="small-button" @click="closeQrPanel">{{ t('common.close') }}</button>
             </div>
             <div class="qr-content">
               <div v-if="qrSetup.qrSvg" class="qr-box" v-html="qrSetup.qrSvg"></div>
               <div v-else class="qr-placeholder">
-                {{ qrSetup.done ? "没有返回二维码" : "正在等待二维码..." }}
+                {{ qrSetup.done ? t('channel.noQr') : t('channel.waitingQr') }}
               </div>
               <div class="qr-meta">
                 <span class="pill" :class="{ good: qrSetup.success === true, bad: qrSetup.success === false }">{{ qrStateLabel }}</span>
-                <strong v-if="qrSetup.userCode" class="user-code">用户码：{{ qrSetup.userCode }}</strong>
+                <strong v-if="qrSetup.userCode" class="user-code">{{ t('channel.userCode') }}: {{ qrSetup.userCode }}</strong>
                 <a v-if="qrSetup.qrUrl" :href="qrSetup.qrUrl" target="_blank" rel="noreferrer">{{ qrSetup.qrUrl }}</a>
                 <p>{{ qrHelpText }}</p>
               </div>
             </div>
-            <pre class="qr-output">{{ qrSetup.output.join('\n') }}</pre>
+            <details v-if="qrSetup.output.length" class="advanced-box qr-debug">
+              <summary>{{ t('channel.qrDebug') }}</summary>
+              <pre class="qr-output">{{ qrSetup.output.join('\n') }}</pre>
+            </details>
           </section>
 
           <section v-else-if="showScanBindMode && status.bindingReady" class="qr-panel qr-panel-top qr-panel-idle">
             <div>
-              <h2>已绑定</h2>
-              <p>当前 Channel 已绑定。如需更换账号或刷新 token，请点击上方「重新扫码绑定」。</p>
+              <h2>{{ t('channel.boundTitle') }}</h2>
+              <p>{{ t('channel.boundHint') }}</p>
             </div>
-          </section>
-
-          <div v-if="showManualChannelFields" class="field-grid">
-            <label v-for="field in currentChannel.fields" :key="field[0]">
-              <span class="label-row">
-                {{ field[1] }}
-                <span v-if="fieldHelp(field[0])" class="help-dot" :title="fieldHelp(field[0])">?</span>
-              </span>
-              <select v-if="field[3] === 'select'" v-model="currentChannelFields[field[0]]">
-                <option v-for="option in field[4]" :key="option" :value="option">{{ option }}</option>
-              </select>
-              <input v-else :type="field[3] || 'text'" v-model="currentChannelFields[field[0]]" />
-            </label>
-          </div>
-
-          <div v-if="showManualChannelFields" class="hint">
-            <template v-if="canAutoQrScan">也可切换到「扫码绑定」完成授权；手动填写时保存后可在连接页启动 Bridge。</template>
-            <template v-else-if="canGuidedSetup">该通道需在平台或外部网关完成配置。点击「配置引导」会校验字段、保存配置，并给出下一步说明与入口链接（不是自动授权二维码）。</template>
-            <template v-else>请填写下方密钥或 token，保存后可在连接页启动 Bridge。</template>
-          </div>
-          <div v-if="showManualChannelFields && channelBindingHint" class="hint">{{ channelBindingHint }}</div>
-
-          <section v-if="qrPanelVisible && !showScanBindMode" class="qr-panel">
-            <div class="section-head compact-head">
-              <div>
-                <h2>配置引导</h2>
-                <p>{{ qrSetup.message }}</p>
-              </div>
-              <button type="button" class="small-button" @click="closeQrPanel">关闭</button>
-            </div>
-            <div class="qr-content">
-              <div v-if="qrSetup.qrSvg" class="qr-box" v-html="qrSetup.qrSvg"></div>
-              <div v-else class="qr-placeholder">
-                {{ qrSetup.done ? "没有返回二维码" : "正在等待二维码..." }}
-              </div>
-              <div class="qr-meta">
-                <span class="pill" :class="{ good: qrSetup.success === true, bad: qrSetup.success === false }">{{ qrStateLabel }}</span>
-                <strong v-if="qrSetup.userCode" class="user-code">用户码：{{ qrSetup.userCode }}</strong>
-                <a v-if="qrSetup.qrUrl" :href="qrSetup.qrUrl" target="_blank" rel="noreferrer">{{ qrSetup.qrUrl }}</a>
-                <p>{{ qrHelpText }}</p>
-              </div>
-            </div>
-            <pre class="qr-output">{{ qrSetup.output.join('\n') }}</pre>
           </section>
 
           <div class="action-row">
-            <button v-if="canGuidedSetup && !canAutoQrScan" type="button" @click="prepareChannelBinding">配置引导</button>
-            <button type="button" class="secondary" @click="validateChannelFields">校验字段</button>
-            <button type="button" class="secondary" :disabled="!hasReusableChannelConfig" @click="reuseChannelConfig">复用已配置 Channel</button>
-            <button type="button" @click="saveChannelSettings">保存 Channel</button>
-            <button type="button" class="secondary" @click="refreshStatus">检测状态</button>
+            <button type="button" @click="saveChannelSettings">{{ t('channel.saveChannel') }}</button>
+            <button type="button" class="secondary" @click="refreshStatus">{{ t('channel.refreshStatus') }}</button>
           </div>
+
+          <details class="advanced-box channel-advanced" :open="channelAdvancedOpen" @toggle="channelAdvancedOpen = $event.target.open">
+            <summary>{{ t('common.advancedOptions') }}</summary>
+
+            <div v-if="showManualChannelFields" class="field-grid">
+              <label v-for="field in currentChannel.fields" :key="field[0]">
+                <span class="label-row">
+                  {{ field[1] }}
+                  <span v-if="fieldHelp(field[0])" class="help-dot" :title="fieldHelp(field[0])">?</span>
+                </span>
+                <select v-if="field[3] === 'select'" v-model="currentChannelFields[field[0]]">
+                  <option v-for="option in field[4]" :key="option" :value="option">{{ option }}</option>
+                </select>
+                <input v-else :type="field[3] || 'text'" v-model="currentChannelFields[field[0]]" />
+              </label>
+            </div>
+
+            <div v-if="showManualChannelFields" class="hint">
+              <template v-if="canAutoQrScan">{{ t('channel.manualHintScan') }}</template>
+              <template v-else-if="canGuidedSetup">{{ t('channel.manualHintGuided') }}</template>
+              <template v-else>{{ t('channel.manualHintDefault') }}</template>
+            </div>
+            <div v-if="showManualChannelFields && channelBindingHint" class="hint">{{ channelBindingHint }}</div>
+
+            <div class="action-row">
+              <button v-if="canGuidedSetup && !canAutoQrScan" type="button" @click="prepareChannelBinding">{{ t('channel.guidedSetup') }}</button>
+              <button type="button" class="secondary" @click="validateChannelFields">{{ t('channel.validateFields') }}</button>
+              <button type="button" class="secondary" :disabled="!hasReusableChannelConfig" @click="reuseChannelConfig">{{ t('channel.reuseConfig') }}</button>
+            </div>
+          </details>
         </div>
       </section>
 
       <section class="panel test-panel">
-        <h2>接收目标与测试</h2>
-        <p>接收目标就是一个用户、群或 Webhook。一个接收目标同一时间只能绑定到一个连接的 Agent，已被占用的目标会在下拉里置灰。</p>
-        <div class="grid form-two">
-          <label>当前 Channel<input :value="currentChannel.label" readonly /></label>
-          <label>
-            <span class="label-row">接收目标 <span class="help-dot" :title="SELECT_HELP.channelTarget">?</span></span>
-            <select :value="activeTargetKey" @change="chooseTargetByKey($event.target.value)">
-              <option v-if="channelTargetOptions.length === 0" value="" disabled>尚未发现目标，请先刷新发现目标</option>
-              <option v-for="item in channelTargetOptions" :key="item.key" :value="item.key" :disabled="Boolean(item.lockedBy)">
-                {{ targetLabel(item.target) }}{{ item.lockedBy ? `（已被 ${item.lockedBy.connectionName} / ${item.lockedBy.agentLabel} 使用）` : "" }}
-              </option>
-            </select>
-          </label>
+        <h2>{{ t('test.title') }}</h2>
+        <p>{{ t('test.desc') }}</p>
+
+        <div class="test-steps">
+          <div class="test-step-card">
+            <h3>{{ t('test.discoverStep') }}</h3>
+            <div class="test-step-head">
+              <button type="button" class="secondary" @click="refreshDiscoveredTargets">{{ t('test.refreshTargets') }}</button>
+              <span class="pill" :class="{ good: bridgeRuntime.running, bad: !bridgeRuntime.running }">
+                {{ bridgeRuntime.running ? t('test.bridgeRunning') : t('test.bridgeStopped') }}
+              </span>
+            </div>
+            <label>
+              <span class="label-row">{{ t('test.targetSelect') }} <span class="help-dot" :title="SELECT_HELP.channelTarget">?</span></span>
+              <select :value="activeTargetKey" @change="chooseTargetByKey($event.target.value)">
+                <option v-if="channelTargetOptions.length === 0" value="" disabled>{{ t('test.noTargets') }}</option>
+                <option v-for="item in channelTargetOptions" :key="item.key" :value="item.key" :disabled="Boolean(item.lockedBy)">
+                  {{ targetLabel(item.target) }}{{ item.lockedBy ? t('test.targetInUseSuffix', { connection: item.lockedBy.connectionName, agent: item.lockedBy.agentLabel }) : "" }}
+                </option>
+              </select>
+            </label>
+            <div v-if="activeTargetLock" class="hint warning-hint">
+              {{ t('test.targetLocked', { connection: activeTargetLock.connectionName, agent: activeTargetLock.agentLabel }) }}
+            </div>
+            <p class="hint">{{ t('test.flowHint', { step1: t('test.step1'), step2: t('test.step2'), step3: t('test.step3') }) }}</p>
+          </div>
+
+          <div class="test-step-card">
+            <h3>{{ t('test.sendStep') }}</h3>
+            <label>{{ t('test.content') }}<textarea v-model="currentTest.content" :placeholder="t('test.defaultContent')"></textarea></label>
+            <div class="action-row">
+              <button type="button" :disabled="Boolean(activeTargetLock) || !canDirectSendTest" @click="sendTest">{{ t('test.sendTest') }}</button>
+            </div>
+            <p class="hint">{{ sendTestHelpText }}</p>
+          </div>
         </div>
-        <div v-if="activeTargetLock" class="hint warning-hint">
-          当前目标已被 {{ activeTargetLock.connectionName }} 的 {{ activeTargetLock.agentLabel }} 使用。一个接收目标同一时刻只允许对应一个 Agent。
-        </div>
-        <div class="grid form-two">
-          <label>目标名称<input v-model="activeTarget.name" /></label>
-          <label>
-            <span class="label-row">接收 ID 类型 <span class="help-dot" :title="SELECT_HELP.receiveIdType">?</span></span>
-            <select v-model="activeTarget.receiveIdType">
-              <option value="chat_id">chat_id</option>
-              <option value="open_id">open_id</option>
-              <option value="user_id">user_id</option>
-              <option value="group_id">group_id</option>
-              <option value="email">email</option>
-              <option value="channel_id">channel_id</option>
-              <option value="session_webhook">session_webhook</option>
-              <option value="webhook">webhook</option>
-            </select>
-          </label>
-        </div>
-        <div class="grid form-two">
-          <label>接收 ID<input v-model="activeTarget.receiveId" placeholder="为空时点击会尝试从已收到的消息里发现" @focus="refreshTargetsIfEmpty" /></label>
-          <label>HTTP/Webhook<input v-model="activeTarget.webhookUrl" placeholder="HTTP webhook 或钉钉 sessionWebhook" /></label>
-        </div>
+
         <details class="advanced-box" :open="targetAdvancedOpen" @toggle="targetAdvancedOpen = $event.target.open">
-          <summary>高级路由字段</summary>
-          <p>这些字段用于内部会话路由和回复原消息。通常通过“刷新发现目标”自动填充。</p>
+          <summary>{{ t('test.advancedRouting') }}</summary>
+          <p>{{ t('test.advancedRoutingHint') }}</p>
           <div class="grid form-two">
-            <label>session_key<input v-model="activeTarget.sessionKey" /></label>
-            <label>user_id<input v-model="activeTarget.userId" /></label>
+            <label>{{ t('test.targetName') }}<input v-model="activeTarget.name" /></label>
+            <label>
+              <span class="label-row">{{ t('test.receiveIdType') }} <span class="help-dot" :title="SELECT_HELP.receiveIdType">?</span></span>
+              <select v-model="activeTarget.receiveIdType">
+                <option value="chat_id">chat_id</option>
+                <option value="open_id">open_id</option>
+                <option value="user_id">user_id</option>
+                <option value="group_id">group_id</option>
+                <option value="email">email</option>
+                <option value="channel_id">channel_id</option>
+                <option value="session_webhook">session_webhook</option>
+                <option value="webhook">webhook</option>
+              </select>
+            </label>
+          </div>
+          <div class="grid form-two">
+            <label>{{ t('test.receiveId') }}<input v-model="activeTarget.receiveId" :placeholder="t('test.receiveIdPlaceholder')" @focus="refreshTargetsIfEmpty" /></label>
+            <label>{{ t('test.webhook') }}<input v-model="activeTarget.webhookUrl" :placeholder="t('test.webhookPlaceholder')" /></label>
+          </div>
+          <div class="grid form-two">
+            <label>{{ t('test.sessionKey') }}<input v-model="activeTarget.sessionKey" /></label>
+            <label>{{ t('test.userId') }}<input v-model="activeTarget.userId" /></label>
           </div>
           <div class="grid form-two">
             <label>
-              <span class="label-row">message type <span class="help-dot" :title="SELECT_HELP.messageType">?</span></span>
+              <span class="label-row">{{ t('test.messageType') }} <span class="help-dot" :title="SELECT_HELP.messageType">?</span></span>
               <select v-model="currentTest.messageType">
                 <option value="text">text</option>
                 <option value="image">image</option>
@@ -2147,22 +2283,13 @@ listen("update-download-event", (event) => {
                 <option value="mixed">mixed</option>
               </select>
             </label>
-            <label>message id<input v-model="activeTarget.messageId" placeholder="可选：回复某条消息" /></label>
+            <label>{{ t('test.messageId') }}<input v-model="activeTarget.messageId" :placeholder="t('test.messageIdPlaceholder')" /></label>
+          </div>
+          <div class="action-row">
+            <button type="button" class="secondary" @click="addTarget">{{ t('test.addTarget') }}</button>
+            <button type="button" class="danger" @click="removeTarget">{{ t('test.removeTarget') }}</button>
           </div>
         </details>
-        <label>content<textarea v-model="currentTest.content"></textarea></label>
-        <div class="action-row">
-          <button type="button" :disabled="Boolean(activeTargetLock) || !canDirectSendTest" @click="sendTest">发送测试</button>
-          <button type="button" class="secondary" @click="refreshDiscoveredTargets">刷新发现目标</button>
-          <button type="button" class="secondary" @click="addTarget">新增目标</button>
-          <button type="button" class="danger" @click="removeTarget">删除目标</button>
-        </div>
-        <div class="hint">
-          {{ sendTestHelpText }}
-        </div>
-        <div class="hint">
-          推荐流程：先启动 bridge，然后在当前聊天渠道里给机器人或目标通道发一条消息，再点击“刷新发现目标”。客户端会从已收到的消息里解析用户、群和会话信息。
-        </div>
       </section>
     </section>
 
@@ -2171,19 +2298,18 @@ listen("update-download-event", (event) => {
         <div class="panel">
           <div class="section-head">
             <div>
-              <h2>Agent</h2>
-              <p>选择编程 Agent。配置保存在本地数据库；启动 Bridge 时再生成 agentlink.toml。</p>
+              <h2>{{ t('agent.listTitle') }}</h2>
+              <p>{{ t('agent.listDesc') }}</p>
             </div>
-            <span class="pill">{{ currentAgent.id }}</span>
           </div>
           <div class="select-list agent-list">
             <button
-              v-for="agent in AGENTS"
+              v-for="agent in displayAgents"
               :key="agent.id"
               type="button"
               class="select-card"
               :class="{ active: connection.selectedAgent === agent.id }"
-              @click="chooseAgent(agent)"
+              @click="chooseAgent(AGENTS.find((item) => item.id === agent.id))"
             >
               <strong>{{ agent.label }}</strong>
               <span>{{ agent.kind }}</span>
@@ -2196,7 +2322,7 @@ listen("update-download-event", (event) => {
           <div class="section-head">
             <div>
               <h2>{{ currentAgent.label }}</h2>
-              <p>{{ currentAgent.summary || "通过 CLI 命令接入。" }}</p>
+              <p>{{ currentAgent.summary }}</p>
             </div>
             <span class="pill" :class="{ good: status.agentInstalled, bad: !status.agentInstalled }">{{ labelStatus(status.agentInstallStatus) }}</span>
           </div>
@@ -2204,14 +2330,14 @@ listen("update-download-event", (event) => {
           <div v-if="connection.selectedAgent === 'codex'" class="field-stack">
             <div class="grid form-two">
               <label>
-                <span class="label-row">backend <span class="help-dot" :title="SELECT_HELP.codexBackend">?</span></span>
+                <span class="label-row">{{ t('agent.codexBackend') }} <span class="help-dot" :title="SELECT_HELP.codexBackend">?</span></span>
                 <select v-model="currentAgentFields.backend">
                   <option value="exec">exec</option>
                   <option value="app-server">app-server</option>
                 </select>
               </label>
               <label>
-                <span class="label-row">mode <span class="help-dot" :title="SELECT_HELP.codexMode">?</span></span>
+                <span class="label-row">{{ t('agent.codexMode') }} <span class="help-dot" :title="SELECT_HELP.codexMode">?</span></span>
                 <select v-model="currentAgentFields.mode">
                   <option value="suggest">suggest</option>
                   <option value="auto-edit">auto-edit</option>
@@ -2220,28 +2346,34 @@ listen("update-download-event", (event) => {
                 </select>
               </label>
             </div>
-            <label>codex_bin<input v-model="currentAgentFields.command" /></label>
-            <div class="grid form-two">
-              <label><span class="label-row">model <span class="help-dot" :title="SELECT_HELP.agentModel">?</span></span><input v-model="currentAgentFields.model" placeholder="可为空" /></label>
-              <label>reasoning_effort<input v-model="currentAgentFields.reasoningEffort" placeholder="medium" /></label>
-            </div>
-            <label><span class="label-row">extra args <span class="help-dot" :title="SELECT_HELP.agentArgs">?</span></span><textarea v-model="currentAgentFields.args" placeholder="每行一个额外参数"></textarea></label>
+            <label>{{ t('agent.codexBin') }}<input v-model="currentAgentFields.command" /></label>
+            <details class="advanced-box">
+              <summary>{{ t('agent.codexAdvanced') }}</summary>
+              <div class="grid form-two">
+                <label><span class="label-row">{{ t('agent.model') }} <span class="help-dot" :title="SELECT_HELP.agentModel">?</span></span><input v-model="currentAgentFields.model" :placeholder="t('agent.modelPlaceholder')" /></label>
+                <label>{{ t('agent.reasoningEffort') }}<input v-model="currentAgentFields.reasoningEffort" :placeholder="t('agent.reasoningPlaceholder')" /></label>
+              </div>
+              <label><span class="label-row">{{ t('agent.extraArgs') }} <span class="help-dot" :title="SELECT_HELP.agentArgs">?</span></span><textarea v-model="currentAgentFields.args"></textarea></label>
+            </details>
           </div>
 
           <div v-else class="field-stack">
-            <label>command<input v-model="currentAgentFields.command" /></label>
-            <div class="grid form-two">
-              <label><span class="label-row">model <span class="help-dot" :title="SELECT_HELP.agentModel">?</span></span><input v-model="currentAgentFields.model" placeholder="可为空" /></label>
-              <label>mode<input v-model="currentAgentFields.mode" placeholder="可为空" /></label>
-            </div>
-            <label><span class="label-row">args <span class="help-dot" :title="SELECT_HELP.agentArgs">?</span></span><textarea v-model="currentAgentFields.args" placeholder="每行一个参数，支持 {prompt} / {session_id} / {model} / {mode}"></textarea></label>
+            <label>{{ t('agent.command') }}<input v-model="currentAgentFields.command" /></label>
+            <details class="advanced-box">
+              <summary>{{ t('common.advancedOptions') }}</summary>
+              <div class="grid form-two">
+                <label><span class="label-row">{{ t('agent.model') }} <span class="help-dot" :title="SELECT_HELP.agentModel">?</span></span><input v-model="currentAgentFields.model" :placeholder="t('agent.modelPlaceholder')" /></label>
+                <label>{{ t('agent.modeField') }}<input v-model="currentAgentFields.mode" :placeholder="t('agent.modelPlaceholder')" /></label>
+              </div>
+              <label><span class="label-row">{{ t('agent.args') }} <span class="help-dot" :title="SELECT_HELP.agentArgs">?</span></span><textarea v-model="currentAgentFields.args"></textarea></label>
+            </details>
           </div>
 
-          <div class="hint">当前运行会使用 {{ currentAgent.label }} 处理来自 {{ currentChannel.label }} 的消息。</div>
+          <div class="hint">{{ t('agent.linkHintNamed', { agent: currentAgent.label, channel: currentChannel.label }) }}</div>
           <div class="action-row">
-            <button type="button" @click="saveAgentSettings">保存 Agent</button>
-            <button type="button" class="secondary" @click="checkAgent(currentAgent)">检测当前</button>
-            <button type="button" class="secondary" @click="checkAllAgents">检测全部</button>
+            <button type="button" @click="saveAgentSettings">{{ t('agent.saveAgent') }}</button>
+            <button type="button" class="secondary" @click="checkAgent(currentAgent)">{{ t('agent.checkCurrent') }}</button>
+            <button type="button" class="secondary" @click="checkAllAgents">{{ t('agent.checkAll') }}</button>
           </div>
         </div>
       </section>
@@ -2254,30 +2386,38 @@ listen("update-download-event", (event) => {
             <img :src="appLogo" alt="AgentLink logo" class="about-logo" />
             <div>
               <h2>AgentLink</h2>
-              <p>多 Agent 聊天连接器</p>
+              <p>{{ t('about.tagline') }}</p>
             </div>
           </div>
           <span class="pill">v{{ updateStatus.appVersion || "0.1.0" }}</span>
         </div>
 
         <div class="about-grid">
+          <section class="about-prefs">
+            <h2>{{ t('common.advancedOptions') }}</h2>
+            <label class="checkbox-row">
+              <input type="checkbox" v-model="uiPreferences.showAdvancedOptions" @change="onShowAdvancedChange" />
+              {{ t('about.showAdvanced') }}
+            </label>
+          </section>
+
           <section class="about-update-section">
-            <h2>版本与更新</h2>
+            <h2>{{ t('about.versionTitle') }}</h2>
             <div class="about-stats">
               <div class="about-stat">
-                <span>当前版本</span>
+                <span>{{ t('about.currentVersion') }}</span>
                 <strong>v{{ updateStatus.appVersion || "0.1.0" }}</strong>
               </div>
               <div class="about-stat">
-                <span>更新状态</span>
+                <span>{{ t('about.updateStatus') }}</span>
                 <strong :class="{ good: updateStatus.available || updateStatus.installed, bad: updateStatus.error }">{{ updateStateText }}</strong>
               </div>
               <div class="about-stat">
-                <span>最新版本</span>
+                <span>{{ t('about.latestVersion') }}</span>
                 <strong>{{ updateStatus.available?.version || "-" }}</strong>
               </div>
               <div class="about-stat">
-                <span>上次检查</span>
+                <span>{{ t('about.lastCheck') }}</span>
                 <strong>{{ updatePreferences.lastUpdateCheckAt || "-" }}</strong>
               </div>
             </div>
@@ -2285,61 +2425,61 @@ listen("update-download-event", (event) => {
             <div v-if="updateStatus.error" class="hint warning-hint">{{ updateStatus.error }}</div>
             <div v-if="updateStatus.installing" class="update-progress">
               <div><span :style="{ width: `${updateProgressPercent || 35}%` }"></span></div>
-              <strong>{{ updateProgressPercent ? `正在下载并安装 ${updateProgressPercent}%` : "正在下载并安装" }}</strong>
+              <strong>{{ updateProgressPercent ? t('update.downloadingPercent', { percent: updateProgressPercent }) : t('update.downloading') }}</strong>
             </div>
             <label class="checkbox-row">
               <input type="checkbox" :checked="updatePreferences.autoCheckUpdates" @change="toggleAutoUpdateChecks" />
-              启动后自动检查更新
+              {{ t('about.autoCheck') }}
             </label>
             <label class="checkbox-row">
               <input type="checkbox" :checked="updatePreferences.autoInstallUpdates" @change="toggleAutoInstallUpdates" />
-              发现新版本后自动下载安装
+              {{ t('about.autoInstall') }}
             </label>
             <div class="action-row">
               <button type="button" class="small-button" :disabled="updateStatus.checking || updateStatus.installing" @click="checkForUpdates(true)">
-                {{ updateStatus.checking ? "检查中" : "检查更新" }}
+                {{ updateStatus.checking ? t('about.checking') : t('about.checkUpdate') }}
               </button>
-              <button type="button" class="small-button" :disabled="!updateStatus.available || updateStatus.installing || updateStatus.installed" @click="installAvailableUpdate">下载并安装</button>
-              <button type="button" class="small-button" :disabled="!updateStatus.error || updateStatus.checking || updateStatus.installing" @click="checkForUpdates(true)">重试</button>
-              <button type="button" class="small-button" :disabled="!updateStatus.installed" @click="relaunchDesktop">重启生效</button>
+              <button type="button" class="small-button" :disabled="!updateStatus.available || updateStatus.installing || updateStatus.installed" @click="installAvailableUpdate">{{ t('about.downloadInstall') }}</button>
+              <button type="button" class="small-button" :disabled="!updateStatus.error || updateStatus.checking || updateStatus.installing" @click="checkForUpdates(true)">{{ t('common.retry') }}</button>
+              <button type="button" class="small-button" :disabled="!updateStatus.installed" @click="relaunchDesktop">{{ t('about.relaunch') }}</button>
             </div>
           </section>
           <section>
-            <h2>定位</h2>
-            <p>AgentLink 用来把飞书、钉钉、微信、Telegram 等聊天渠道连接到 Codex、Claude Code、Gemini、Cursor Agent 等编程 Agent，并在本地统一管理渠道密钥、接收目标、Agent 会话和运行状态。</p>
+            <h2>{{ t('about.positionTitle') }}</h2>
+            <p>{{ t('about.positionDesc') }}</p>
           </section>
           <section>
-            <h2>使用步骤</h2>
+            <h2>{{ t('about.stepsTitle') }}</h2>
             <ol class="steps">
-              <li>在“连接”页确认 AgentLink exe、配置文件和 workspace。</li>
-              <li>在“Channel”页选择渠道，填写密钥或扫码绑定。</li>
-              <li>启动 Bridge 后，从真实聊天渠道给机器人发一条消息。</li>
-              <li>点击“刷新发现目标”，选择要绑定的用户、群或 Webhook。</li>
-              <li>在“Agent”页选择 Codex 或其它编程 Agent，并检测命令是否可用。</li>
-              <li>回到“连接”页启动，聊天消息会进入对应 Agent，结果再回到渠道。</li>
+              <li>{{ t('about.step1') }}</li>
+              <li>{{ t('about.step2') }}</li>
+              <li>{{ t('about.step3') }}</li>
+              <li>{{ t('about.step4') }}</li>
+              <li>{{ t('about.step5') }}</li>
+              <li>{{ t('about.step6') }}</li>
             </ol>
           </section>
           <section>
-            <h2>托盘行为</h2>
-            <p>点击窗口关闭按钮不会退出程序，而是隐藏到右下角托盘。托盘菜单可以显示窗口、打开关于、触发启动/停止 Bridge，只有点击“退出 AgentLink”才会真正退出并停止后台 Bridge。</p>
+            <h2>{{ t('about.trayTitle') }}</h2>
+            <p>{{ t('about.trayDesc') }}</p>
           </section>
           <section>
-            <h2>设计约束</h2>
-            <p>一个接收目标同一时刻只能绑定一个 Agent，避免同一个群或用户的消息被多个 Agent 同时处理。高级路由字段会保留在界面里，但日常使用只需要关注 Channel、接收目标和 Agent。</p>
+            <h2>{{ t('about.designTitle') }}</h2>
+            <p>{{ t('about.designDesc') }}</p>
           </section>
         </div>
       </section>
     </section>
 
-    <section class="log-panel">
-      <div class="section-head compact-head">
-        <h2>日志</h2>
-        <div class="action-row inline-actions">
-          <button type="button" class="small-button" @click="refreshBridgeLogs">刷新 Bridge 日志</button>
-          <button type="button" class="small-button" @click="logText = ''">清空</button>
-        </div>
-      </div>
+    <details class="log-panel advanced-box" :open="logPanelOpen" @toggle="logPanelOpen = $event.target.open">
+      <summary class="log-panel-summary">
+        <span>{{ t('common.debugLog') }}</span>
+        <span class="log-panel-actions" @click.stop>
+          <button type="button" class="small-button" @click="refreshBridgeLogs">{{ t('log.refreshBridge') }}</button>
+          <button type="button" class="small-button" @click="logText = ''">{{ t('common.clearLog') }}</button>
+        </span>
+      </summary>
       <pre id="log">{{ logText }}</pre>
-    </section>
+    </details>
   </main>
 </template>

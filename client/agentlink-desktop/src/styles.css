@@ -174,9 +174,17 @@ p {
   flex: 1;
 }
 
-.nav-button {
-  margin-bottom: 6px;
-  white-space: nowrap;
+.nav-locale {
+  margin: 0 0 6px 8px;
+}
+
+.nav-locale select {
+  width: auto;
+  min-width: 128px;
+  min-height: 34px;
+  margin-top: 0;
+  padding: 6px 32px 6px 10px;
+  font-size: 13px;
 }
 
 .tab {
@@ -633,6 +641,20 @@ button:disabled {
   color: #b13838;
 }
 
+.scan-credential-box {
+  margin-bottom: 12px;
+  padding: 12px;
+  border: 1px solid #d6dee8;
+  border-radius: 8px;
+  background: #f7fafc;
+}
+
+.scan-credential-hint {
+  margin: 0 0 10px;
+  color: #405065;
+  font-size: 13px;
+}
+
 .bind-row {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
@@ -910,4 +932,96 @@ pre {
   .about-stats {
     grid-template-columns: 1fr;
   }
+}
+
+.channel-group-title {
+  margin: 8px 0 6px;
+  color: #5a6b7d;
+  font-size: 12px;
+  font-weight: 760;
+  letter-spacing: 0.04em;
+}
+
+.channel-group-details summary {
+  cursor: pointer;
+  color: #314056;
+  font-size: 13px;
+  font-weight: 760;
+  margin-bottom: 8px;
+}
+
+.test-steps {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.test-step-card {
+  border: 1px solid #d6dee8;
+  border-radius: 8px;
+  background: #f8fafc;
+  padding: 12px;
+}
+
+.test-step-card h3 {
+  margin: 0 0 10px;
+  font-size: 14px;
+}
+
+.test-step-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+label.radio-row {
+  display: flex;
+  margin-bottom: 8px;
+}
+
+.radio-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: fit-content;
+  margin-bottom: 8px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.radio-row input[type="radio"] {
+  display: inline-block;
+  width: 16px;
+  min-height: 16px;
+  margin: 0;
+  flex: 0 0 16px;
+}
+
+.about-prefs {
+  grid-column: span 1;
+}
+
+.locale-options {
+  display: grid;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.log-panel-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.log-panel-actions {
+  display: inline-flex;
+  gap: 8px;
+}
+
+.log-panel pre {
+  margin-top: 10px;
+  max-height: 220px;
 }

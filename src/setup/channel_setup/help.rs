@@ -1,11 +1,11 @@
 pub fn unsupported_reason(platform: &str) -> &'static str {
     match platform {
-        "dingtalk" => "DingTalk bot apps are configured with client_id/client_secret/robot_code, not QR onboarding.",
+        "dingtalk" => "DingTalk uses client_id/client_secret OAuth scan in the desktop client; robot_code is optional.",
         "telegram" => "Telegram bots are created by BotFather and use a bot token.",
         "slack" => "Slack apps use app-level and bot tokens; Socket Mode has no QR onboarding.",
         "discord" => "Discord bots use a bot token from Developer Portal.",
         "line" => "Line Messaging API uses channel secret and channel access token.",
-        "wecom" => "WeCom apps use corp_id/corp_secret/agent_id and callback settings.",
+        "wecom" => "WeCom uses corp_id/corp_secret/agent_id; the desktop client can verify OAuth via QR scan.",
         "max" => "MAX bots use a bot token.",
         "qqbot" => "QQ official bot uses app_id/app_secret for Gateway auth.",
         "weibo" => "Weibo bot integration uses app_id/app_secret and ws token endpoint.",
@@ -18,6 +18,8 @@ pub fn unsupported_reason(platform: &str) -> &'static str {
 pub fn print_support_matrix() {
     println!("QR setup support:");
     println!("  feishu/lark  supported, bridge prints QR and writes app_id/app_secret");
+    println!("  dingtalk     desktop OAuth scan (client_id/client_secret required first)");
+    println!("  wecom        desktop OAuth scan (corp_id/corp_secret/agent_id required first)");
     println!("  qq           external QR in NapCat/LLOneBot; bridge writes OneBot config");
     println!("  weixin       external QR in OpenClaw/iLink gateway; bridge writes config shell");
     println!("  others       no QR onboarding; use platform app tokens/secrets");
