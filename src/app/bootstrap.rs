@@ -160,6 +160,7 @@ pub async fn run(
         }
         let store_path = PathBuf::from(&config.data_dir).join(format!("{}.sqlite3", project.name));
         let store = SessionStore::open(store_path)?;
+        let agent_kind = project.agent.kind.clone();
         let engine = Engine::new(project.name.clone(), agent, platforms, store);
         engine.start().await?;
         let platform_names = selected
@@ -167,9 +168,15 @@ pub async fn run(
             .map(|platform| platform.display_name())
             .collect::<Vec<_>>()
             .join(", ");
+        tracing::info!(
+            project = %project.name,
+            agent = %agent_kind,
+            platforms = %platform_names,
+            "project bridge started"
+        );
         println!(
-            "project `{}` started; platforms: {}",
-            project.name, platform_names
+            "project `{}` started; agent: {}; platforms: {}",
+            project.name, agent_kind, platform_names
         );
         engines.push(engine);
     }

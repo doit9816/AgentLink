@@ -1,5 +1,5 @@
 ﻿<script setup>
-import { computed, reactive, ref, watch } from "vue";
+import { computed, nextTick, reactive, ref, watch } from "vue";
 import { getVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -398,6 +398,7 @@ const toasts = reactive([]);
 const activeConnectionId = ref("conn-default");
 const clientStateLoaded = ref(false);
 const targetAdvancedOpen = ref(false);
+const channelBindMode = ref("scan");
 const agentChecks = reactive({});
 const qrSetup = reactive({
   visible: false,
@@ -503,6 +504,12 @@ const updateStateText = computed(() => {
 const currentTest = computed(() => connection.value.test ?? { messageType: "text", content: "" });
 const canAutoQrScan = computed(() => Boolean(currentChannel.value.scan));
 const canGuidedSetup = computed(() => Boolean(currentChannel.value.guided));
+const showManualChannelFields = computed(() => {
+  if (!canAutoQrScan.value) return true;
+  return channelBindMode.value === "manual";
+});
+const showScanBindMode = computed(() => canAutoQrScan.value && channelBindMode.value === "scan");
+const scanBindButtonLabel = computed(() => (status.bindingReady ? "重新扫码绑定" : "扫码绑定"));
 const channelBindingHint = ref("");
 const canDirectSendTest = computed(() => DIRECT_SEND_CHANNELS.has(connection.value.selectedChannel));
 const hasReusableChannelConfig = computed(() => Boolean(findReusableChannelFields(connection.value.selectedChannel)));
@@ -632,10 +639,34 @@ function chooseChannel(channel) {
   connection.value.selectedChannel = channel.id;
   ensureTargets(channel.id);
   syncChannelFromConfigured(channel.id, false);
-  refreshStatus();
+  syncChannelBindModeForChannel();
+  refreshStatus().then(() => maybeAutoStartScanBind());
   refreshChannelBindingHint().catch(() => {
     channelBindingHint.value = "";
   });
+}
+
+function syncChannelBindModeForChannel() {
+  channelBindMode.value = canAutoQrScan.value ? "scan" : "manual";
+}
+
+function switchToManualBindMode() {
+  channelBindMode.value = "manual";
+  if (qrPanelVisible.value) {
+    closeQrPanel();
+  }
+}
+
+function handleScanBindToggle() {
+  channelBindMode.value = "scan";
+  scanBind();
+}
+
+async function maybeAutoStartScanBind() {
+  if (activeTab.value !== "channel") return;
+  if (!showScanBindMode.value || status.bindingReady) return;
+  if (qrPanelVisible.value || busy.value === "running") return;
+  await scanBind({ silent: true });
 }
 
 watch(
@@ -1066,6 +1097,8 @@ async function loadClientState() {
   } finally {
     clientStateLoaded.value = true;
     await refreshStatus();
+    syncChannelBindModeForChannel();
+    await maybeAutoStartScanBind();
     await loadAppVersion();
     window.setTimeout(() => {
       maybeAutoCheckForUpdate();
@@ -1310,7 +1343,7 @@ async function installFromUpdateDialog() {
 }
 
 function maybeAutoCheckForUpdate() {
-  if (!updatePreferences.autoCheckUpdates || updateStatus.checked) return;
+  if (IS_DEV_LAYOUT || !updatePreferences.autoCheckUpdates || updateStatus.checked) return;
   checkForUpdates(false)
     .then((update) => {
       if (update && updatePreferences.autoInstallUpdates) {
@@ -1558,24 +1591,34 @@ async function prepareChannelBinding() {
   });
 }
 
-async function scanBind() {
-  if (canGuidedSetup.value) {
+async function scanBind({ silent = false } = {}) {
+  if (canGuidedSetup.value && !canAutoQrScan.value) {
     return prepareChannelBinding();
   }
   if (!canAutoQrScan.value) {
     appendLog(`${currentChannel.value.label}: 不支持客户端内扫码，请填写密钥或 token。`);
     return;
   }
-  appendLog(`准备在客户端打开 ${currentChannel.value.label} 扫码绑定...`);
-  return run("扫码绑定", async () => {
+  channelBindMode.value = "scan";
+  const task = async () => {
     await refreshChannelBindingHint();
     await persistChannelFieldsToSqlite();
     await applySaveConfigResult(await invoke("ensure_config_file", { options: options() }));
     const next = await invoke("start_qr_setup", { options: options() });
     applyQrSetupStatus(next);
     startQrPolling(next.sessionId);
-    return "已在客户端打开扫码面板";
-  });
+    return status.bindingReady ? "已打开重新扫码面板" : "已在客户端打开扫码面板";
+  };
+  if (silent) {
+    try {
+      await task();
+    } catch (error) {
+      appendLog(`扫码绑定：${error}`);
+    }
+    return;
+  }
+  appendLog(`准备在客户端打开 ${currentChannel.value.label} 扫码绑定...`);
+  return run(scanBindButtonLabel.value, task);
 }
 
 async function validateChannelFields() {
@@ -1698,10 +1741,23 @@ watch(
 
 watch(
   () => [activeConnectionId.value, connection.value.selectedChannel],
-  () => {
+  async () => {
     if (qrSetup.visible && qrSetup.platform !== connection.value.selectedChannel) {
       resetQrPanel();
     }
+    syncChannelBindModeForChannel();
+    await nextTick();
+    await maybeAutoStartScanBind();
+  }
+);
+
+watch(
+  () => activeTab.value,
+  async () => {
+    if (activeTab.value !== "channel") return;
+    syncChannelBindModeForChannel();
+    await nextTick();
+    await maybeAutoStartScanBind();
   }
 );
 
@@ -1925,13 +1981,59 @@ listen("update-download-event", (event) => {
             <span class="pill" :class="{ good: status.bindingReady, bad: !status.bindingReady }">{{ labelStatus(status.bindingStatus) }}</span>
           </div>
 
-          <div class="bind-row">
-            <button type="button" class="toggle active">填写密钥</button>
-            <button v-if="canAutoQrScan" type="button" class="toggle" @click="scanBind">扫码绑定</button>
-            <button v-if="canGuidedSetup" type="button" class="toggle" @click="prepareChannelBinding">配置引导</button>
+          <div v-if="canAutoQrScan || canGuidedSetup" class="bind-row">
+            <button
+              v-if="canAutoQrScan"
+              type="button"
+              class="toggle"
+              :class="{ active: showScanBindMode }"
+              @click="handleScanBindToggle"
+            >
+              {{ scanBindButtonLabel }}
+            </button>
+            <button
+              v-if="canAutoQrScan"
+              type="button"
+              class="toggle"
+              :class="{ active: showManualChannelFields }"
+              @click="switchToManualBindMode"
+            >
+              填写密钥
+            </button>
+            <button v-if="canGuidedSetup && !canAutoQrScan" type="button" class="toggle" @click="prepareChannelBinding">配置引导</button>
           </div>
 
-          <div class="field-grid">
+          <section v-if="showScanBindMode && qrPanelVisible" class="qr-panel qr-panel-top">
+            <div class="section-head compact-head">
+              <div>
+                <h2>{{ scanBindButtonLabel }}</h2>
+                <p>{{ qrSetup.message }}</p>
+              </div>
+              <button type="button" class="small-button" @click="closeQrPanel">关闭</button>
+            </div>
+            <div class="qr-content">
+              <div v-if="qrSetup.qrSvg" class="qr-box" v-html="qrSetup.qrSvg"></div>
+              <div v-else class="qr-placeholder">
+                {{ qrSetup.done ? "没有返回二维码" : "正在等待二维码..." }}
+              </div>
+              <div class="qr-meta">
+                <span class="pill" :class="{ good: qrSetup.success === true, bad: qrSetup.success === false }">{{ qrStateLabel }}</span>
+                <strong v-if="qrSetup.userCode" class="user-code">用户码：{{ qrSetup.userCode }}</strong>
+                <a v-if="qrSetup.qrUrl" :href="qrSetup.qrUrl" target="_blank" rel="noreferrer">{{ qrSetup.qrUrl }}</a>
+                <p>{{ qrHelpText }}</p>
+              </div>
+            </div>
+            <pre class="qr-output">{{ qrSetup.output.join('\n') }}</pre>
+          </section>
+
+          <section v-else-if="showScanBindMode && status.bindingReady" class="qr-panel qr-panel-top qr-panel-idle">
+            <div>
+              <h2>已绑定</h2>
+              <p>当前 Channel 已绑定。如需更换账号或刷新 token，请点击上方「重新扫码绑定」。</p>
+            </div>
+          </section>
+
+          <div v-if="showManualChannelFields" class="field-grid">
             <label v-for="field in currentChannel.fields" :key="field[0]">
               <span class="label-row">
                 {{ field[1] }}
@@ -1944,17 +2046,17 @@ listen("update-download-event", (event) => {
             </label>
           </div>
 
-          <div class="hint">
-            <template v-if="canAutoQrScan">该通道支持客户端内扫码。点击「扫码绑定」会先保存配置，并在本窗口显示二维码与轮询状态。</template>
+          <div v-if="showManualChannelFields" class="hint">
+            <template v-if="canAutoQrScan">也可切换到「扫码绑定」完成授权；手动填写时保存后可在连接页启动 Bridge。</template>
             <template v-else-if="canGuidedSetup">该通道需在平台或外部网关完成配置。点击「配置引导」会校验字段、保存配置，并给出下一步说明与入口链接（不是自动授权二维码）。</template>
             <template v-else>请填写下方密钥或 token，保存后可在连接页启动 Bridge。</template>
           </div>
-          <div v-if="channelBindingHint" class="hint">{{ channelBindingHint }}</div>
+          <div v-if="showManualChannelFields && channelBindingHint" class="hint">{{ channelBindingHint }}</div>
 
-          <section v-if="qrPanelVisible" class="qr-panel">
+          <section v-if="qrPanelVisible && !showScanBindMode" class="qr-panel">
             <div class="section-head compact-head">
               <div>
-                <h2>{{ canGuidedSetup && !canAutoQrScan ? "配置引导" : "扫码绑定" }}</h2>
+                <h2>配置引导</h2>
                 <p>{{ qrSetup.message }}</p>
               </div>
               <button type="button" class="small-button" @click="closeQrPanel">关闭</button>
@@ -1975,8 +2077,7 @@ listen("update-download-event", (event) => {
           </section>
 
           <div class="action-row">
-            <button v-if="canAutoQrScan" type="button" @click="scanBind">扫码绑定</button>
-            <button v-if="canGuidedSetup" type="button" @click="prepareChannelBinding">配置引导</button>
+            <button v-if="canGuidedSetup && !canAutoQrScan" type="button" @click="prepareChannelBinding">配置引导</button>
             <button type="button" class="secondary" @click="validateChannelFields">校验字段</button>
             <button type="button" class="secondary" :disabled="!hasReusableChannelConfig" @click="reuseChannelConfig">复用已配置 Channel</button>
             <button type="button" @click="saveChannelSettings">保存 Channel</button>

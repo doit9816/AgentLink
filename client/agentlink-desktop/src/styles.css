@@ -635,7 +635,7 @@ button:disabled {
 
 .bind-row {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
   gap: 8px;
   margin-bottom: 12px;
 }
@@ -696,6 +696,25 @@ button:disabled {
 
 .advanced-box p {
   margin-bottom: 10px;
+}
+
+.qr-panel-idle {
+  color: #405065;
+}
+
+.qr-panel-idle h2 {
+  margin: 0 0 8px;
+  font-size: 16px;
+}
+
+.qr-panel-idle p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.qr-panel-top {
+  margin-top: 0;
 }
 
 .qr-panel {

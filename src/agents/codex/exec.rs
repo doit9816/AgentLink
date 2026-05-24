@@ -3,6 +3,7 @@ use super::exec_output::{parse_codex_exec_stdout, CodexExecOutput};
 use super::exec_prompt::codex_exec_prompt_and_images;
 use super::CodexAgent;
 use crate::core::{AgentSession, Event, FileAttachment, ImageAttachment, PermissionResult};
+use crate::util::path_env::{apply_enriched_path_tokio, resolve_executable};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use std::process::Stdio;
@@ -144,21 +145,35 @@ async fn run_codex_exec_turn(
     images: Vec<ImageAttachment>,
     files: Vec<FileAttachment>,
 ) -> Result<CodexExecOutput> {
+    tracing::info!(
+        agent = "codex",
+        backend = "exec",
+        session_id = %session_id,
+        thread_id = %thread_id,
+        prompt_len = prompt.len(),
+        images = images.len(),
+        files = files.len(),
+        preview = %crate::util::preview::preview_text(&prompt, 80),
+        "agent codex exec turn start"
+    );
     let (prompt, image_paths) = codex_exec_prompt_and_images(agent, prompt, images, files).await?;
     let args = build_codex_exec_args(agent, thread_id, &image_paths);
-    let mut command = Command::new(&agent.codex_bin);
+    let codex_bin = resolve_executable(&agent.codex_bin)
+        .map_err(|err| anyhow!("start Codex CLI `{}`: {err}", agent.codex_bin))?;
+    let mut command = Command::new(&codex_bin);
     command
         .args(&args)
         .current_dir(&agent.work_dir)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    apply_enriched_path_tokio(&mut command);
     for (key, value) in codex_exec_env(agent) {
         command.env(key, value);
     }
     let mut child = command
         .spawn()
-        .map_err(|err| anyhow!("start Codex CLI `{}`: {err}", agent.codex_bin))?;
+        .map_err(|err| anyhow!("start Codex CLI `{}`: {err}", codex_bin.display()))?;
     if let Some(mut stdin) = child.stdin.take() {
         stdin.write_all(prompt.as_bytes()).await?;
         stdin.write_all(b"\n").await?;
@@ -178,6 +193,15 @@ async fn run_codex_exec_turn(
         } else {
             stderr.trim()
         };
+        tracing::error!(
+            agent = "codex",
+            backend = "exec",
+            session_id = %session_id,
+            exit = %output.status,
+            stderr_len = stderr.len(),
+            detail = %crate::util::preview::preview_text(detail, 200),
+            "agent codex exec turn failed"
+        );
         return Err(anyhow!("Codex CLI exited with {}: {detail}", output.status));
     }
     if parsed.final_text.trim().is_empty() && !stdout.trim().is_empty() {
@@ -190,5 +214,15 @@ async fn run_codex_exec_turn(
             .or_else(|| (!thread_id.is_empty()).then(|| thread_id.to_string()))
             .or_else(|| Some(session_id.to_string()));
     }
+    tracing::info!(
+        agent = "codex",
+        backend = "exec",
+        session_id = %session_id,
+        final_session_id = %parsed.final_session_id.as_deref().unwrap_or(""),
+        result_len = parsed.final_text.len(),
+        progress_events = parsed.progress_events.len(),
+        preview = %crate::util::preview::preview_text(&parsed.final_text, 80),
+        "agent codex exec turn finished"
+    );
     Ok(parsed)
 }

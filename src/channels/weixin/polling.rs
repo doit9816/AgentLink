@@ -143,10 +143,7 @@ fn weixin_message_from_item(platform: &WeixinPlatform, item: &Value) -> Result<O
     }
     let msg_id = item.get("message_id").map(value_to_string);
     let context_token = weixin_context_token(item);
-    let client_id = weixin_string_field(
-        item,
-        &["client_id", "clientId", "ilink_bot_id", "bot_id"],
-    );
+    let client_id = weixin_string_field(item, &["client_id", "clientId", "ilink_bot_id", "bot_id"]);
     simple_message(
         &platform.config.name,
         format!("{}:{}", platform.config.name, from),
@@ -179,11 +176,6 @@ fn weixin_string_field(item: &Value, keys: &[&str]) -> String {
 fn weixin_context_token(item: &Value) -> String {
     weixin_string_field(
         item,
-        &[
-            "context_token",
-            "contextToken",
-            "ctx_token",
-            "context",
-        ],
+        &["context_token", "contextToken", "ctx_token", "context"],
     )
 }

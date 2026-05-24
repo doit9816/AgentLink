@@ -48,10 +48,18 @@ impl Engine {
             Arc::new(move |platform, message| {
                 let engine = Arc::clone(&engine);
                 Box::pin(async move {
+                    let platform_name = platform.name().to_string();
+                    let session_key = message.session_key.clone();
                     let reply_ctx = message.reply_ctx.clone();
                     let platform_for_error = Arc::clone(&platform);
                     if let Err(err) = engine.handle_message(platform, message).await {
-                        tracing::error!(error = %err, "handle message failed");
+                        tracing::error!(
+                            project = %engine.project,
+                            platform = %platform_name,
+                            session_key = %session_key,
+                            error = %err,
+                            "channel to agent handling failed"
+                        );
                         let _ = platform_for_error
                             .reply(reply_ctx, format!("Bridge 处理消息失败：{err}"))
                             .await;

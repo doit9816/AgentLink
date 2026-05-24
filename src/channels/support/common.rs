@@ -29,11 +29,31 @@ pub(crate) async fn dispatch_webhook(
     handler_ref: &Arc<Mutex<Option<MessageHandler>>>,
     message: Message,
 ) {
+    let platform_name = message
+        .platform
+        .clone()
+        .unwrap_or_else(|| platform.name().to_string());
+    tracing::info!(
+        platform = %platform_name,
+        session_key = %message.session_key,
+        user_id = %message.user_id,
+        message_type = ?message.message_type,
+        content_len = message.content.len(),
+        attachments = message.attachments.len(),
+        preview = %crate::util::preview::preview_text(&message.content, 80),
+        "channel inbound dispatch to engine"
+    );
     let handler = handler_ref.lock().await.clone();
     if let Some(handler) = handler {
         tokio::spawn(async move {
             handler(platform, message).await;
         });
+    } else {
+        tracing::warn!(
+            platform = %platform_name,
+            session_key = %message.session_key,
+            "channel inbound dropped: engine handler not ready"
+        );
     }
 }
 
@@ -74,6 +94,14 @@ where
         message_id: ctx.message_id.clone(),
         content: content.to_string(),
     };
+    tracing::info!(
+        channel = %ctx.channel,
+        target = %ctx.target,
+        message_id = ctx.message_id.as_deref().unwrap_or(""),
+        content_len = content.len(),
+        preview = %crate::util::preview::preview_text(content, 80),
+        "channel outbound message"
+    );
     platform.outbox().lock().await.push(record.clone());
     let _ = platform.out_tx().send(record);
 }

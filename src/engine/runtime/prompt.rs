@@ -1,12 +1,7 @@
 use crate::core::{AttachmentKind, Message};
 
 pub(crate) fn log_preview(value: &str, max_chars: usize) -> String {
-    let mut preview = value.split_whitespace().collect::<Vec<_>>().join(" ");
-    if preview.chars().count() > max_chars {
-        preview = preview.chars().take(max_chars).collect::<String>();
-        preview.push_str("...");
-    }
-    preview
+    crate::util::preview::preview_text(value, max_chars)
 }
 
 pub(super) fn prompt_with_attachments(message: &Message) -> String {

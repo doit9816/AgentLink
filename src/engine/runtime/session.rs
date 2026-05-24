@@ -112,7 +112,14 @@ impl Engine {
             preview = %super::log_preview(&final_text, 100),
             "agent final result ready"
         );
-        if !final_text.is_empty() {
+        if final_text.is_empty() {
+            tracing::info!(
+                project = %self.project,
+                platform = %platform_name,
+                session_key = %message.session_key,
+                "agent final result empty; skip channel send"
+            );
+        } else {
             platform.send(message.reply_ctx.clone(), final_text).await?;
             tracing::info!(
                 project = %self.project,

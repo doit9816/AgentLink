@@ -6,6 +6,7 @@ use super::CodexAgent;
 use crate::core::{
     AgentSession, Event, FileAttachment, ImageAttachment, PermissionBehavior, PermissionResult,
 };
+use crate::util::path_env::{apply_enriched_path_tokio, resolve_executable};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use serde_json::{json, Value};
@@ -35,16 +36,21 @@ pub struct CodexAppServerSession {
 
 impl CodexAppServerSession {
     pub(super) async fn start(agent: CodexAgent, resume_id: Option<String>) -> Result<Self> {
-        let mut child = tokio::process::Command::new(&agent.codex_bin)
+        let codex_bin = resolve_executable(&agent.codex_bin)
+            .map_err(|err| anyhow!("start codex app-server (`{}`): {err}", agent.codex_bin))?;
+        let mut child_cmd = tokio::process::Command::new(&codex_bin);
+        child_cmd
             .arg("app-server")
             .arg("--listen")
             .arg("stdio://")
             .current_dir(&agent.work_dir)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::null());
+        apply_enriched_path_tokio(&mut child_cmd);
+        let mut child = child_cmd
             .spawn()
-            .map_err(|err| anyhow!("start codex app-server: {err}"))?;
+            .map_err(|err| anyhow!("start codex app-server (`{}`): {err}", codex_bin.display()))?;
 
         let stdin = child
             .stdin

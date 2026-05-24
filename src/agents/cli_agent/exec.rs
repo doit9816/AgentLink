@@ -1,5 +1,6 @@
 use super::CliAgent;
 use crate::core::{FileAttachment, ImageAttachment};
+use crate::util::path_env::{apply_enriched_path_tokio, resolve_executable};
 use anyhow::{anyhow, Result};
 use serde_json::Value;
 use std::process::Stdio;
@@ -14,12 +15,24 @@ pub(super) async fn run_cli_turn(
     images: Vec<ImageAttachment>,
     files: Vec<FileAttachment>,
 ) -> Result<String> {
+    tracing::info!(
+        agent = %agent.name,
+        session_id = %session_id,
+        command = %agent.command,
+        prompt_len = prompt.len(),
+        images = images.len(),
+        files = files.len(),
+        preview = %crate::util::preview::preview_text(&prompt, 80),
+        "agent cli turn start"
+    );
     let prompt = prompt_with_attachment_notes(prompt, images, files);
     let mut args = render_args(agent, session_id, &prompt);
     if agent.append_prompt && !args.iter().any(|arg| arg.contains(&prompt)) && !agent.prompt_stdin {
         args.push(prompt.clone());
     }
-    let mut command = Command::new(&agent.command);
+    let command_path = resolve_executable(&agent.command)
+        .map_err(|err| anyhow!("start {} CLI `{}`: {err}", agent.name, agent.command))?;
+    let mut command = Command::new(&command_path);
     command
         .args(&args)
         .current_dir(&agent.work_dir)
@@ -28,12 +41,17 @@ pub(super) async fn run_cli_turn(
     if agent.prompt_stdin {
         command.stdin(Stdio::piped());
     }
+    apply_enriched_path_tokio(&mut command);
     for (key, value) in &agent.env {
         command.env(key, value);
     }
-    let mut child = command
-        .spawn()
-        .map_err(|err| anyhow!("start {} CLI `{}`: {err}", agent.name, agent.command))?;
+    let mut child = command.spawn().map_err(|err| {
+        anyhow!(
+            "start {} CLI `{}`: {err}",
+            agent.name,
+            command_path.display()
+        )
+    })?;
     if agent.prompt_stdin {
         if let Some(mut stdin) = child.stdin.take() {
             stdin.write_all(prompt.as_bytes()).await?;
@@ -49,6 +67,15 @@ pub(super) async fn run_cli_turn(
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     if !output.status.success() {
+        tracing::error!(
+            agent = %agent.name,
+            session_id = %session_id,
+            command = %command_path.display(),
+            exit = %output.status,
+            stderr_len = stderr.len(),
+            detail = %crate::util::preview::preview_text(stderr.trim(), 200),
+            "agent cli turn failed"
+        );
         return Err(anyhow!(
             "{} CLI exited with {}: {}",
             agent.name,
@@ -56,7 +83,16 @@ pub(super) async fn run_cli_turn(
             stderr.trim()
         ));
     }
-    Ok(extract_cli_output(&stdout).unwrap_or_else(|| stdout.trim().to_string()))
+    let result = extract_cli_output(&stdout).unwrap_or_else(|| stdout.trim().to_string());
+    tracing::info!(
+        agent = %agent.name,
+        session_id = %session_id,
+        command = %command_path.display(),
+        result_len = result.len(),
+        preview = %crate::util::preview::preview_text(&result, 80),
+        "agent cli turn finished"
+    );
+    Ok(result)
 }
 
 fn prompt_with_attachment_notes(

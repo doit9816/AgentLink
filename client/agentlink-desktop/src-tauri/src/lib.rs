@@ -96,8 +96,7 @@ struct AgentCheckOptions {
     command: Option<String>,
 }
 
-#[cfg_attr(not(windows), allow(dead_code))]
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PickPathOptions {
     #[allow(dead_code)]
@@ -592,14 +591,23 @@ fn check_agent(options: AgentCheckOptions) -> Result<AgentCheckStatus, String> {
 }
 
 #[tauri::command]
-fn pick_path(options: PickPathOptions) -> Result<Option<String>, String> {
+async fn pick_path(app: AppHandle, options: PickPathOptions) -> Result<Option<String>, String> {
     #[cfg(windows)]
     {
-        pick_path_windows(options)
+        return tauri::async_runtime::spawn_blocking(move || pick_path_windows(options))
+            .await
+            .map_err(|err| err.to_string())?;
     }
+
     #[cfg(not(windows))]
     {
-        pick_path_native(options)
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        app.run_on_main_thread(move || {
+            let _ = tx.send(pick_path_native(options));
+        })
+        .map_err(|err| err.to_string())?;
+        rx.await
+            .map_err(|_| "path picker closed before returning".to_string())?
     }
 }
 
@@ -937,8 +945,10 @@ async fn send_test_message(request: TestMessageRequest) -> Result<TestMessageRes
 
 #[tauri::command]
 async fn send_channel_message(
-    request: ChannelMessageRequest,
+    app: AppHandle,
+    mut request: ChannelMessageRequest,
 ) -> Result<TestMessageResponse, String> {
+    request.options.channel_fields = Some(resolved_channel_fields(&app, &request.options)?);
     let platform = request.options.platform.trim().to_lowercase();
     match platform.as_str() {
         "http" => send_http_test_message(&request).await,
@@ -1206,11 +1216,12 @@ async fn send_weixin_direct_message(
     let reply_ctx = opt_target(&request.target.reply_context).ok_or_else(|| {
         "微信测试发送需要先从微信给机器人发一条消息，用发现到的目标缓存 context_token。".to_string()
     })?;
-    let (context_token, client_id) = weixin_reply_tokens(&reply_ctx)?;
+    let context_token = weixin_reply_context_token(&reply_ctx)?;
     let body = json!({
         "msg": {
+            "from_user_id": "",
             "to_user_id": to_user_id,
-            "client_id": client_id,
+            "client_id": weixin_generate_client_id(),
             "message_type": 2,
             "message_state": 2,
             "context_token": context_token,
@@ -1236,6 +1247,17 @@ async fn send_weixin_direct_message(
     let status = response.status();
     let body = response.text().await.map_err(|err| err.to_string())?;
     if status.is_success() {
+        if let Some(detail) = weixin_api_business_error(&body) {
+            return Err(format!(
+                "Weixin HTTP 200 但业务失败（常见原因：context_token 过期，请从微信重新发一条消息并刷新发现目标）：{detail}"
+            ));
+        }
+        if weixin_api_empty_success(&body) {
+            return Err(
+                "Weixin HTTP 200 但返回空对象 {}，消息可能未投递。请先从微信给机器人发一条新消息，点击「刷新发现目标」后再试。"
+                    .to_string(),
+            );
+        }
         Ok(TestMessageResponse {
             status: status.as_u16(),
             body,
@@ -1311,6 +1333,37 @@ fn required_target_receive_id(target: &ChannelTargetRequest) -> Result<String, S
 fn weixin_uin_header() -> String {
     use base64::Engine;
     base64::engine::general_purpose::STANDARD.encode(rand::random::<u32>().to_string())
+}
+
+fn weixin_generate_client_id() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0);
+    format!("agentlink_{}_{}", rand::random::<u64>(), ts)
+}
+
+fn weixin_api_empty_success(body: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|value| value.as_object().map(|object| object.is_empty()))
+        .unwrap_or(false)
+}
+
+fn weixin_api_business_error(body: &str) -> Option<String> {
+    let value = serde_json::from_str::<serde_json::Value>(body).ok()?;
+    let ret = value.get("ret").and_then(|item| item.as_i64());
+    let errcode = value.get("errcode").and_then(|item| item.as_i64());
+    if matches!(ret, Some(code) if code != 0) || matches!(errcode, Some(code) if code != 0) {
+        let text = value.to_string();
+        return Some(if text.chars().count() > 500 {
+            format!("{}...", text.chars().take(500).collect::<String>())
+        } else {
+            text
+        });
+    }
+    None
 }
 
 fn config_data_dir(app: &AppHandle, options: &ClientOptions) -> Result<PathBuf, String> {
@@ -1413,6 +1466,11 @@ fn discovered_receive_fields(
         }
         _ => ("user_id".to_string(), user_id.to_string(), String::new()),
     }
+}
+
+fn weixin_reply_context_token(reply_ctx: &str) -> Result<String, String> {
+    let (context_token, _) = weixin_reply_tokens(reply_ctx)?;
+    Ok(context_token)
 }
 
 fn weixin_reply_tokens(reply_ctx: &str) -> Result<(String, String), String> {
@@ -1610,6 +1668,7 @@ fn start_bridge(
         .arg(&config)
         .arg("--platform")
         .arg(&options.platform)
+        .env("PATH", enriched_path_env_var())
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr));
     #[cfg(windows)]
@@ -1755,14 +1814,15 @@ fn render_config(app: &AppHandle, options: &ClientOptions) -> Result<String, Str
             .unwrap_or_else(|| opt_or(&options.agent_backend, "exec"));
         out.push_str(&format!("backend = {}\n", toml_string(backend)));
         out.push_str(&format!("mode = {}\n", toml_string(agent_mode)));
-        out.push_str(&format!(
-            "codex_bin = {}\n",
-            toml_string(if agent_command.is_empty() {
-                "codex"
-            } else {
-                agent_command
-            })
-        ));
+        let codex_command = if agent_command.is_empty() {
+            "codex"
+        } else {
+            agent_command
+        };
+        let codex_bin = resolve_command_in_search_path(codex_command)
+            .map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or_else(|| codex_command.to_string());
+        out.push_str(&format!("codex_bin = {}\n", toml_string(&codex_bin)));
         push_optional(
             &mut out,
             "model",
@@ -1781,7 +1841,15 @@ fn render_config(app: &AppHandle, options: &ClientOptions) -> Result<String, Str
                 .or(options.reasoning_effort.as_deref()),
         );
     } else if agent_type != "mock" {
-        push_optional(&mut out, "command", Some(agent_command));
+        let command = if agent_command.is_empty() {
+            default_agent_command(agent_type)
+        } else {
+            agent_command
+        };
+        let resolved = resolve_command_in_search_path(command)
+            .map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or_else(|| command.to_string());
+        push_optional(&mut out, "command", Some(resolved.as_str()));
         push_optional(
             &mut out,
             "model",
@@ -2907,6 +2975,15 @@ static EXECUTABLE_SEARCH_PATHS: OnceLock<Vec<PathBuf>> = OnceLock::new();
 
 fn executable_search_paths() -> &'static [PathBuf] {
     EXECUTABLE_SEARCH_PATHS.get_or_init(build_executable_search_paths)
+}
+
+fn enriched_path_env_var() -> String {
+    let separator = if cfg!(windows) { ";" } else { ":" };
+    executable_search_paths()
+        .iter()
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join(separator)
 }
 
 fn build_executable_search_paths() -> Vec<PathBuf> {
@@ -4187,6 +4264,12 @@ mod weixin_reply_tests {
         let (token, client_id) = weixin_reply_tokens(reply_ctx).expect("tokens");
         assert_eq!(token, "tok-2");
         assert_eq!(client_id, "cid-2");
+    }
+
+    #[test]
+    fn weixin_api_empty_success_detects_empty_object() {
+        assert!(weixin_api_empty_success("{}"));
+        assert!(!weixin_api_empty_success(r#"{"ret":0}"#));
     }
 }
 
