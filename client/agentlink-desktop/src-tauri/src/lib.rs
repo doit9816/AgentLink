@@ -1723,13 +1723,27 @@ fn discovered_receive_fields(
                 )
             }
         }
-        "slack" | "discord" | "line" => (
+        "slack" => (
+            "channel".to_string(),
+            json_string(&value, "channel")
+                .or_else(|| json_string(&value, "channel_id"))
+                .unwrap_or_default(),
+            String::new(),
+        ),
+        "discord" => (
             "channel_id".to_string(),
             json_string(&value, "channel_id")
                 .or_else(|| json_string(&value, "chat_id"))
                 .unwrap_or_default(),
             String::new(),
         ),
+        "line" | "max" | "qqbot" | "weibo" => {
+            let target = json_string(&value, "target")
+                .or_else(|| json_string(&value, "channel_id"))
+                .or_else(|| json_string(&value, "chat_id"))
+                .unwrap_or_else(|| user_id.to_string());
+            ("target".to_string(), target, String::new())
+        }
         "weixin" => {
             let extra = value.get("extra").unwrap_or(&value);
             let receive_id = json_string(&value, "target")
@@ -1738,14 +1752,13 @@ fn discovered_receive_fields(
             ("user_id".to_string(), receive_id, String::new())
         }
         "wecom" => {
-            let chat_id = json_string(&value, "chat_id")
+            let extra = value.get("extra").filter(|v| v.is_object());
+            let chat_id = extra
+                .and_then(|value| json_string(value, "chat_id"))
+                .or_else(|| json_string(&value, "chat_id"))
                 .or_else(|| json_string(&value, "target"))
                 .unwrap_or_else(|| user_id.to_string());
-            (
-                "chat_id".to_string(),
-                chat_id,
-                String::new(),
-            )
+            ("chat_id".to_string(), chat_id, String::new())
         }
         _ => ("user_id".to_string(), user_id.to_string(), String::new()),
     }
@@ -5476,6 +5489,37 @@ mod channel_binding_tests {
     fn qq_guided_binding_requires_ws_url() {
         let missing = missing_required_fields("qq", &HashMap::new());
         assert!(missing.contains(&"ws_url".to_string()));
+    }
+}
+
+#[cfg(test)]
+mod discovered_receive_tests {
+    use super::*;
+
+    #[test]
+    fn slack_discovered_receive_reads_channel_field() {
+        let reply_ctx = r#"{"channel":"C123","thread_ts":"1234.56"}"#;
+        let (ty, id, webhook) = discovered_receive_fields("slack", reply_ctx, "U1");
+        assert_eq!(ty, "channel");
+        assert_eq!(id, "C123");
+        assert!(webhook.is_empty());
+    }
+
+    #[test]
+    fn line_discovered_receive_reads_simple_reply_target() {
+        let reply_ctx =
+            r#"{"channel":"line","target":"U_LINE_TARGET","message_id":"m1","extra":null}"#;
+        let (ty, id, _) = discovered_receive_fields("line", reply_ctx, "U1");
+        assert_eq!(ty, "target");
+        assert_eq!(id, "U_LINE_TARGET");
+    }
+
+    #[test]
+    fn wecom_discovered_receive_reads_extra_chat_id() {
+        let reply_ctx = r#"{"channel":"wecom","target":"user1","extra":{"chat_id":"CHAT1","req_id":"req-1"}}"#;
+        let (ty, id, _) = discovered_receive_fields("wecom", reply_ctx, "user1");
+        assert_eq!(ty, "chat_id");
+        assert_eq!(id, "CHAT1");
     }
 }
 

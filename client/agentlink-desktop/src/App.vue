@@ -125,8 +125,8 @@ const CHANNELS = [
     label: "企业微信",
     kind: "扫码/密钥",
     scan: true,
-    summary: "在企业微信管理后台创建自建应用，填写 corp_id、corp_secret、agent_id 后扫码校验授权；Webhook 仍需配置回调。",
-    required: ["corp_id", "corp_secret", "agent_id"],
+    summary: "推荐扫码绑定智能机器人（WebSocket）；高级选项可填 Webhook 自建应用 corp_id / corp_secret / agent_id。",
+    required: ["bot_id", "bot_secret"],
     fields: [
       ["bot_id", "Bot ID", ""],
       ["bot_secret", "Bot Secret", "", "password"],
