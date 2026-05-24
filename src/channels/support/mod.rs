@@ -110,14 +110,6 @@ webhook_platform_struct!(
     "127.0.0.1:18400",
     "/line/webhook"
 );
-webhook_platform_struct!(
-    WeComPlatformConfig,
-    WeComPlatform,
-    "wecom",
-    "127.0.0.1:18500",
-    "/wecom/callback"
-);
-
 macro_rules! polling_platform {
     ($platform:ident) => {
         pub struct $platform {
@@ -190,7 +182,6 @@ macro_rules! has_outbox {
 }
 
 has_outbox!(LinePlatform);
-has_outbox!(WeComPlatform);
 has_outbox!(MaxPlatform);
 has_outbox!(WeixinPlatform);
 has_outbox!(QqBotPlatform);

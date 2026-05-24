@@ -11,5 +11,6 @@ pub mod slack;
 mod support;
 pub mod telegram;
 pub mod wecom;
+pub use wecom::WeComPlatform;
 pub mod weibo;
 pub mod weixin;

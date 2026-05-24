@@ -33,6 +33,7 @@ const ACCOUNTS_LARK_BASE: &str = "https://accounts.larksuite.com";
 const OPEN_FEISHU_BASE: &str = "https://open.feishu.cn";
 const OPEN_LARK_BASE: &str = "https://open.larksuite.com";
 const DEFAULT_WEIXIN_API_BASE: &str = "https://ilinkai.weixin.qq.com";
+const DEFAULT_WECOM_WS_URL: &str = "wss://openws.work.weixin.qq.com";
 const DEFAULT_WEIXIN_BOT_TYPE: &str = "3";
 const DESKTOP_UPDATER_ENDPOINT: &str =
     "https://github.com/doit9816/AgentLink/releases/latest/download/latest.json";
@@ -396,8 +397,8 @@ fn inspect_status(app: AppHandle, options: ClientOptions) -> Result<ClientStatus
 
     let fields = resolved_channel_fields(&app, &options)?;
     let field_ready = required_fields_ready(&options.platform, &fields);
-    let binding_ready =
-        field_ready || (channel_configured && platform_supports_auto_qr(&options.platform));
+    // 支持扫码 ≠ 已绑定；仅当必填字段齐全时才算 binding_ready（可启动 Bridge）。
+    let binding_ready = field_ready;
 
     let agent_fields = resolved_agent_fields(&app, &options)?;
     let agent_command = agent_fields.get("command").cloned();
@@ -992,6 +993,7 @@ async fn send_channel_message(
         "discord" => send_discord_direct_message(&request).await,
         "line" => send_line_direct_message(&request).await,
         "weixin" => send_weixin_direct_message(&request).await,
+        "wecom" => send_wecom_direct_message(&request).await,
         other => Err(format!(
             "{other} 暂不支持客户端直发测试。请先让真实用户在该通道发一条消息，或使用 HTTP 测试通道注入消息。"
         )),
@@ -1303,6 +1305,111 @@ async fn send_weixin_direct_message(
     }
 }
 
+async fn send_wecom_direct_message(
+    request: &ChannelMessageRequest,
+) -> Result<TestMessageResponse, String> {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::connect_async;
+    use tokio_tungstenite::tungstenite::Message as WsMessage;
+
+    let fields = request.options.channel_fields.as_ref();
+    let bot_id = required_field(fields, "bot_id")?;
+    let bot_secret = required_field(fields, "bot_secret")?;
+    let mode = field(fields, "connection_mode").unwrap_or_else(|| "websocket".to_string());
+    if mode.eq_ignore_ascii_case("webhook") {
+        return Err(
+            "企业微信 Webhook 模式无法在客户端直发测试；请改用 WebSocket 扫码绑定，或配置公网回调后由 Bridge 收发。"
+                .to_string(),
+        );
+    }
+    let reply_ctx = opt_target(&request.target.reply_context).ok_or_else(|| {
+        "企业微信测试发送需要先从企业微信给机器人发一条消息，在「刷新发现目标」后选择目标再发送。"
+            .to_string()
+    })?;
+    let req_id = wecom_req_id_from_reply_ctx(&reply_ctx)?;
+    let ws_url = field(fields, "websocket_url")
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| DEFAULT_WECOM_WS_URL.to_string());
+    let req_id_frame = format!("agentlink-{}", rand::random::<u64>());
+    let subscribe = json!({
+        "cmd": "aibot_subscribe",
+        "headers": { "req_id": req_id_frame },
+        "body": { "bot_id": bot_id, "secret": bot_secret }
+    });
+    let respond = json!({
+        "cmd": "aibot_respond_msg",
+        "headers": { "req_id": req_id },
+        "body": {
+            "msgtype": "markdown",
+            "markdown": { "content": request.content }
+        }
+    });
+
+    let (stream, _) = connect_async(&ws_url)
+        .await
+        .map_err(|err| format!("企业微信 WebSocket 连接失败 `{ws_url}`: {err}"))?;
+    let (mut write, mut read) = stream.split();
+    write
+        .send(WsMessage::Text(subscribe.to_string().into()))
+        .await
+        .map_err(|err| format!("企业微信订阅发送失败: {err}"))?;
+    let mut subscribed = false;
+    for _ in 0..12 {
+        let Some(message) = read.next().await else {
+            break;
+        };
+        let text = match message.map_err(|err| err.to_string())? {
+            WsMessage::Text(text) => text,
+            _ => continue,
+        };
+        let value: serde_json::Value =
+            serde_json::from_str(&text).map_err(|err| format!("企业微信响应解析失败: {err}"))?;
+        if value.get("errcode").and_then(serde_json::Value::as_i64) == Some(0) {
+            subscribed = true;
+            break;
+        }
+        if value.get("cmd").and_then(serde_json::Value::as_str) == Some("aibot_subscribe") {
+            let code = value
+                .get("errcode")
+                .and_then(serde_json::Value::as_i64)
+                .unwrap_or(-1);
+            let msg = value
+                .get("errmsg")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("subscribe failed");
+            return Err(format!("企业微信订阅失败 ({code}): {msg}"));
+        }
+    }
+    if !subscribed {
+        return Err("企业微信 WebSocket 订阅超时，请确认 bot_id/bot_secret 正确。".to_string());
+    }
+    write
+        .send(WsMessage::Text(respond.to_string().into()))
+        .await
+        .map_err(|err| format!("企业微信回复发送失败: {err}"))?;
+    Ok(TestMessageResponse {
+        status: 200,
+        body: "企业微信测试消息已通过 WebSocket 发送。".to_string(),
+    })
+}
+
+fn wecom_req_id_from_reply_ctx(reply_ctx: &str) -> Result<String, String> {
+    let value = serde_json::from_str::<serde_json::Value>(reply_ctx)
+        .map_err(|err| format!("企业微信 reply_context 不是合法 JSON: {err}"))?;
+    let req_id = value
+        .get("extra")
+        .and_then(|extra| extra.get("req_id"))
+        .or_else(|| value.get("req_id"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    req_id.ok_or_else(|| {
+        "企业微信测试回复需要入站消息里的 req_id。请先从企业微信给机器人发消息，刷新发现目标后再试。"
+            .to_string()
+    })
+}
+
 async fn send_json_post(
     url: &str,
     bearer_token: Option<String>,
@@ -1497,6 +1604,16 @@ fn discovered_receive_fields(
                 .unwrap_or_else(|| user_id.to_string());
             ("user_id".to_string(), receive_id, String::new())
         }
+        "wecom" => {
+            let chat_id = json_string(&value, "chat_id")
+                .or_else(|| json_string(&value, "target"))
+                .unwrap_or_else(|| user_id.to_string());
+            (
+                "chat_id".to_string(),
+                chat_id,
+                String::new(),
+            )
+        }
         _ => ("user_id".to_string(), user_id.to_string(), String::new()),
     }
 }
@@ -1535,14 +1652,14 @@ fn json_string(value: &serde_json::Value, key: &str) -> Option<String> {
 }
 
 #[tauri::command]
-fn setup_channel(options: ClientOptions) -> Result<String, String> {
-    let exe = resolve_exe_path(&options.exe_path)?;
+fn setup_channel(app: AppHandle, options: ClientOptions) -> Result<String, String> {
+    let exe = resolve_exe_path(&app, &options.exe_path)?;
     let args = setup_args(&options)?;
     run_capture_owned(&exe, args)
 }
 
 #[tauri::command]
-fn launch_qr_setup(options: ClientOptions) -> Result<String, String> {
+fn launch_qr_setup(app: AppHandle, options: ClientOptions) -> Result<String, String> {
     if !platform_supports_scan(&options.platform) {
         return Err(format!(
             "{} does not support QR setup. Please fill credentials manually.",
@@ -1550,7 +1667,7 @@ fn launch_qr_setup(options: ClientOptions) -> Result<String, String> {
         ));
     }
 
-    let exe = resolve_exe_path(&options.exe_path)?;
+    let exe = resolve_exe_path(&app, &options.exe_path)?;
     let args = setup_args(&options)?;
     run_capture_owned(&exe, args)
 }
@@ -1678,8 +1795,9 @@ fn start_bridge(
     options: ClientOptions,
     state: tauri::State<BridgeState>,
 ) -> Result<String, String> {
+    ensure_channel_ready_for_bridge(&app, &options)?;
     let config = write_config_file(&app, &options)?;
-    let exe = resolve_exe_path(&options.exe_path)?;
+    let exe = resolve_exe_path(&app, &options.exe_path)?;
     let mut guard = state.child.lock().map_err(|err| err.to_string())?;
     if let Some(mut child) = guard.take() {
         match child.try_wait().map_err(|err| err.to_string())? {
@@ -1701,7 +1819,7 @@ fn start_bridge(
     let stderr_path = log_dir.join("agentlink.err.log");
     let stdout = std::fs::File::create(&stdout_path).map_err(|err| err.to_string())?;
     let stderr = std::fs::File::create(&stderr_path).map_err(|err| err.to_string())?;
-    let mut command = Command::new(exe);
+    let mut command = Command::new(&exe);
     command
         .arg("--config")
         .arg(&config)
@@ -1712,7 +1830,9 @@ fn start_bridge(
         .stderr(Stdio::from(stderr));
     #[cfg(windows)]
     command.creation_flags(CREATE_NO_WINDOW);
-    let mut child = command.spawn().map_err(|err| err.to_string())?;
+    let mut child = command
+        .spawn()
+        .map_err(|err| map_bridge_spawn_error(exe.as_str(), &err))?;
     std::thread::sleep(std::time::Duration::from_millis(800));
     if let Some(status) = child.try_wait().map_err(|err| err.to_string())? {
         let stdout = std::fs::read_to_string(&stdout_path).unwrap_or_default();
@@ -1957,6 +2077,16 @@ fn normalized_platform_fields(
             .entry("connection_mode".to_string())
             .or_insert_with(|| "websocket".to_string());
     }
+    if platform == "dingtalk" {
+        items
+            .entry("connection_mode".to_string())
+            .or_insert_with(|| "stream".to_string());
+    }
+    if platform == "wecom" {
+        items
+            .entry("connection_mode".to_string())
+            .or_insert_with(|| "websocket".to_string());
+    }
     items.into_iter().collect()
 }
 
@@ -2049,298 +2179,288 @@ fn agent_option_key(agent_type: &str, key: &str) -> String {
     }
 }
 
-const DINGTALK_OAUTH_PORT: u16 = 48188;
-const WECOM_OAUTH_PORT: u16 = 48189;
-const DINGTALK_OAUTH_PATH: &str = "/dingtalk/oauth/callback";
-const WECOM_OAUTH_PATH: &str = "/wecom/oauth/callback";
-const OAUTH_CALLBACK_TIMEOUT_SECS: u64 = 480;
+const DINGTALK_REGISTRATION_BASE: &str = "https://oapi.dingtalk.com";
+const DINGTALK_REGISTRATION_SOURCE: &str = "DING_DWS_CLAW";
+const WECOM_QR_GENERATE_URL: &str = "https://work.weixin.qq.com/ai/qc/generate";
+const WECOM_QR_QUERY_URL: &str = "https://work.weixin.qq.com/ai/qc/query_result";
+const WECOM_QR_SOURCE: &str = "wecom-cli";
+const WECOM_QR_POLL_INTERVAL_SECS: u64 = 3;
+const WECOM_QR_POLL_TIMEOUT_SECS: u64 = 300;
+const DINGTALK_REGISTRATION_RETRY_WINDOW_SECS: u64 = 120;
 
-#[derive(Debug, Default)]
-struct OAuthCallbackQuery {
-    code: Option<String>,
-    state: Option<String>,
-    error: Option<String>,
-    error_description: Option<String>,
+struct DingTalkRegistrationBegin {
+    device_code: String,
+    user_code: Option<String>,
+    verification_uri_complete: String,
+    expires_in_seconds: u64,
+    interval_seconds: u64,
 }
 
-#[derive(Debug, Deserialize, Default)]
-struct DingTalkUserTokenResponse {
-    #[serde(default, rename = "accessToken")]
-    access_token: String,
-    #[serde(default, rename = "corpId")]
-    corp_id: String,
-    #[serde(default)]
-    error: String,
-    #[serde(default, rename = "errorDescription")]
-    error_description: String,
+fn dingtalk_api_errcode(value: &serde_json::Value) -> i64 {
+    value
+        .get("errcode")
+        .and_then(serde_json::Value::as_i64)
+        .unwrap_or(-1)
 }
 
-#[derive(Debug, Deserialize, Default)]
-struct WeComTokenResponse {
-    #[serde(default)]
-    errcode: i64,
-    #[serde(default)]
-    errmsg: String,
-    #[serde(default, rename = "access_token")]
-    access_token: String,
+fn dingtalk_api_errmsg(value: &serde_json::Value) -> String {
+    value
+        .get("errmsg")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("unknown error")
+        .to_string()
 }
 
-fn loopback_oauth_redirect_uri(port: u16, path: &str) -> String {
-    format!("http://127.0.0.1:{port}{path}")
-}
-
-fn dingtalk_oauth_authorize_url(
-    client_id: &str,
-    state: &str,
-    redirect_uri: &str,
-) -> Result<String, String> {
-    let mut url = reqwest::Url::parse("https://login.dingtalk.com/oauth2/auth")
-        .map_err(|err| err.to_string())?;
-    url.query_pairs_mut()
-        .append_pair("redirect_uri", redirect_uri)
-        .append_pair("response_type", "code")
-        .append_pair("client_id", client_id)
-        .append_pair("scope", "openid corpid")
-        .append_pair("state", state)
-        .append_pair("prompt", "consent");
-    Ok(url.to_string())
-}
-
-fn wecom_qr_connect_url(
-    corp_id: &str,
-    agent_id: &str,
-    state: &str,
-    redirect_uri: &str,
-) -> Result<String, String> {
-    let mut url = reqwest::Url::parse("https://open.work.weixin.qq.com/wwopen/sso/qrConnect")
-        .map_err(|err| err.to_string())?;
-    url.query_pairs_mut()
-        .append_pair("appid", corp_id)
-        .append_pair("agentid", agent_id)
-        .append_pair("redirect_uri", redirect_uri)
-        .append_pair("state", state);
-    Ok(url.to_string())
-}
-
-fn parse_oauth_callback_request(request: &str, expected_path: &str) -> Option<OAuthCallbackQuery> {
-    let first_line = request.lines().next()?;
-    let mut parts = first_line.split_whitespace();
-    if parts.next()? != "GET" {
-        return None;
-    }
-    let target = parts.next()?;
-    let (path, query_string) = target.split_once('?').unwrap_or((target, ""));
-    if path != expected_path {
-        return None;
-    }
-    let mut query = OAuthCallbackQuery::default();
-    for pair in query_string.split('&').filter(|item| !item.is_empty()) {
-        let (key, value) = pair
-            .split_once('=')
-            .map(|(k, v)| (k, v))
-            .unwrap_or((pair, ""));
-        let value = percent_decode_oauth_value(value);
-        match key {
-            "code" => query.code = Some(value),
-            "state" => query.state = Some(value),
-            "error" => query.error = Some(value),
-            "error_description" => query.error_description = Some(value),
-            _ => {}
-        }
-    }
-    Some(query)
-}
-
-fn percent_decode_oauth_value(value: &str) -> String {
-    let bytes = value.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut index = 0usize;
-    while index < bytes.len() {
-        if bytes[index] == b'%' && index + 2 < bytes.len() {
-            if let Ok(byte) = u8::from_str_radix(
-                std::str::from_utf8(&bytes[index + 1..index + 3]).unwrap_or(""),
-                16,
-            ) {
-                out.push(byte);
-                index += 3;
-                continue;
-            }
-        }
-        if bytes[index] == b'+' {
-            out.push(b' ');
-        } else {
-            out.push(bytes[index]);
-        }
-        index += 1;
-    }
-    String::from_utf8(out).unwrap_or_else(|_| value.to_string())
-}
-
-fn oauth_http_response(title: &str, detail: &str) -> Vec<u8> {
-    let body = format!(
-        "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>{title}</title></head><body><h1>{title}</h1><p>{detail}</p><p>可关闭此页面并返回 AgentLink。</p></body></html>"
-    );
-    format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{body}",
-        body.len()
-    )
-    .into_bytes()
-}
-
-async fn read_tcp_request(stream: &mut tokio::net::TcpStream) -> Result<String, String> {
-    use tokio::io::AsyncReadExt;
-    let mut buffer = Vec::with_capacity(4096);
-    let mut chunk = [0u8; 1024];
-    loop {
-        let read = stream
-            .read(&mut chunk)
-            .await
-            .map_err(|err| err.to_string())?;
-        if read == 0 {
-            break;
-        }
-        buffer.extend_from_slice(&chunk[..read]);
-        if buffer.windows(4).any(|window| window == b"\r\n\r\n") || buffer.len() >= 8192 {
-            break;
-        }
-    }
-    String::from_utf8(buffer).map_err(|err| err.to_string())
-}
-
-async fn wait_loopback_oauth_code(
-    port: u16,
-    path: &str,
-    expected_state: &str,
-) -> Result<String, String> {
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
-        .await
-        .map_err(|err| format!("无法绑定本地 OAuth 回调端口 {port}（可能已被占用）：{err}"))?;
-    let deadline =
-        std::time::Instant::now() + std::time::Duration::from_secs(OAUTH_CALLBACK_TIMEOUT_SECS);
-    loop {
-        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-        if remaining.is_zero() {
-            return Err("等待扫码授权超时，请重试。".to_string());
-        }
-        let accepted = tokio::time::timeout(remaining, listener.accept())
-            .await
-            .map_err(|_| "等待扫码授权超时，请重试。".to_string())?;
-        let (mut stream, _) = accepted.map_err(|err| err.to_string())?;
-        let request = read_tcp_request(&mut stream).await?;
-        let query = match parse_oauth_callback_request(&request, path) {
-            Some(query) => query,
-            None => continue,
-        };
-        if let Some(error) = query.error.filter(|value| !value.trim().is_empty()) {
-            let detail = query.error_description.unwrap_or_default();
-            let response = oauth_http_response("授权失败", &format!("{error} {detail}"));
-            let _ = tokio::io::AsyncWriteExt::write_all(&mut stream, &response).await;
-            return Err(format!("OAuth 授权被拒绝：{error} {detail}"));
-        }
-        if query.state.as_deref() != Some(expected_state) {
-            let response = oauth_http_response("状态不匹配", "请返回 AgentLink 重新发起扫码绑定。");
-            let _ = tokio::io::AsyncWriteExt::write_all(&mut stream, &response).await;
-            continue;
-        }
-        let code = query
-            .code
-            .filter(|value| !value.trim().is_empty())
-            .ok_or_else(|| "OAuth 回调缺少 code。".to_string())?;
-        let response = oauth_http_response("授权成功", "授权已完成，请返回 AgentLink 继续。");
-        let _ = tokio::io::AsyncWriteExt::write_all(&mut stream, &response).await;
-        return Ok(code);
-    }
-}
-
-async fn dingtalk_exchange_user_token(
+async fn dingtalk_registration_post(
     client: &reqwest::Client,
-    client_id: &str,
-    client_secret: &str,
-    code: &str,
-) -> Result<DingTalkUserTokenResponse, String> {
+    path: &str,
+    body: serde_json::Value,
+) -> Result<serde_json::Value, String> {
     let response = client
-        .post("https://api.dingtalk.com/v1.0/oauth2/userAccessToken")
-        .json(&serde_json::json!({
-            "clientId": client_id,
-            "clientSecret": client_secret,
-            "code": code,
-            "grantType": "authorization_code"
-        }))
+        .post(format!("{DINGTALK_REGISTRATION_BASE}{path}"))
+        .json(&body)
+        .send()
+        .await
+        .map_err(|err| err.to_string())?;
+    let status = response.status();
+    let text = response.text().await.map_err(|err| err.to_string())?;
+    let value: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|err| format!("钉钉注册接口 JSON 解析失败：{err}; body={text}"))?;
+    if !status.is_success() {
+        return Err(format!("钉钉注册接口 HTTP {status}: {text}"));
+    }
+    if dingtalk_api_errcode(&value) != 0 {
+        return Err(format!(
+            "钉钉注册接口错误：{} (errcode={})",
+            dingtalk_api_errmsg(&value),
+            dingtalk_api_errcode(&value)
+        ));
+    }
+    Ok(value)
+}
+
+async fn begin_dingtalk_registration(
+    client: &reqwest::Client,
+) -> Result<DingTalkRegistrationBegin, String> {
+    let init = dingtalk_registration_post(
+        client,
+        "/app/registration/init",
+        serde_json::json!({ "source": DINGTALK_REGISTRATION_SOURCE }),
+    )
+    .await?;
+    let nonce = init
+        .get("nonce")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if nonce.is_empty() {
+        return Err("钉钉注册 init 响应缺少 nonce。".to_string());
+    }
+
+    let begin = dingtalk_registration_post(
+        client,
+        "/app/registration/begin",
+        serde_json::json!({ "nonce": nonce }),
+    )
+    .await?;
+    let device_code = begin
+        .get("device_code")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let verification_uri_complete = begin
+        .get("verification_uri_complete")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if device_code.is_empty() {
+        return Err("钉钉注册 begin 响应缺少 device_code。".to_string());
+    }
+    if verification_uri_complete.is_empty() {
+        return Err("钉钉注册 begin 响应缺少 verification_uri_complete。".to_string());
+    }
+    let expires_in_seconds = begin
+        .get("expires_in")
+        .or_else(|| begin.get("expire_in"))
+        .and_then(serde_json::Value::as_u64)
+        .filter(|value| *value > 0)
+        .unwrap_or(7200);
+    let interval_seconds = begin
+        .get("interval")
+        .and_then(serde_json::Value::as_u64)
+        .filter(|value| *value > 0)
+        .unwrap_or(3)
+        .max(3);
+    let user_code = begin
+        .get("user_code")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+
+    Ok(DingTalkRegistrationBegin {
+        device_code,
+        user_code,
+        verification_uri_complete,
+        expires_in_seconds,
+        interval_seconds,
+    })
+}
+
+async fn poll_dingtalk_registration(
+    client: &reqwest::Client,
+    device_code: &str,
+) -> Result<serde_json::Value, String> {
+    dingtalk_registration_post(
+        client,
+        "/app/registration/poll",
+        serde_json::json!({ "device_code": device_code }),
+    )
+    .await
+}
+
+fn wecom_qr_plat_code() -> u8 {
+    if cfg!(target_os = "macos") {
+        1
+    } else if cfg!(target_os = "windows") {
+        2
+    } else if cfg!(target_os = "linux") {
+        3
+    } else {
+        0
+    }
+}
+
+async fn wecom_fetch_qr_generate(client: &reqwest::Client) -> Result<(String, String), String> {
+    let mut url = reqwest::Url::parse(WECOM_QR_GENERATE_URL).map_err(|err| err.to_string())?;
+    url.query_pairs_mut()
+        .append_pair("source", WECOM_QR_SOURCE)
+        .append_pair("plat", &wecom_qr_plat_code().to_string());
+    let response = client
+        .get(url)
         .send()
         .await
         .map_err(|err| err.to_string())?;
     let status = response.status();
     let text = response.text().await.map_err(|err| err.to_string())?;
     if !status.is_success() {
-        return Err(format!("钉钉换取用户令牌失败 HTTP {status}: {text}"));
+        return Err(format!("企业微信获取二维码失败 HTTP {status}: {text}"));
     }
-    let parsed: DingTalkUserTokenResponse = serde_json::from_str(&text)
-        .map_err(|err| format!("钉钉令牌响应解析失败：{err}; body={text}"))?;
-    if !parsed.error.trim().is_empty() {
-        return Err(format!(
-            "钉钉换取用户令牌失败：{} {}",
-            parsed.error, parsed.error_description
-        ));
+    let value: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|err| format!("企业微信二维码响应解析失败：{err}; body={text}"))?;
+    let data = value.get("data").unwrap_or(&value);
+    let scode = data
+        .get("scode")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let auth_url = data
+        .get("auth_url")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if scode.is_empty() || auth_url.is_empty() {
+        return Err(format!("企业微信二维码响应格式异常：{text}"));
     }
-    if parsed.access_token.trim().is_empty() {
-        return Err(format!(
-            "钉钉换取用户令牌失败：响应缺少 accessToken; body={text}"
-        ));
-    }
-    Ok(parsed)
+    Ok((scode, auth_url))
 }
 
-async fn wecom_get_access_token(
+async fn wecom_poll_qr_result(
     client: &reqwest::Client,
-    corp_id: &str,
-    corp_secret: &str,
-) -> Result<String, String> {
-    let url = format!(
-        "https://qyapi.weixin.qq.com/cgi-bin/gettoken?corpid={corp_id}&corpsecret={corp_secret}"
-    );
+    scode: &str,
+) -> Result<serde_json::Value, String> {
+    let mut url = reqwest::Url::parse(WECOM_QR_QUERY_URL).map_err(|err| err.to_string())?;
+    url.query_pairs_mut().append_pair("scode", scode);
     let response = client
         .get(url)
         .send()
         .await
         .map_err(|err| err.to_string())?;
+    let status = response.status();
     let text = response.text().await.map_err(|err| err.to_string())?;
-    let parsed: WeComTokenResponse = serde_json::from_str(&text)
-        .map_err(|err| format!("企业微信 gettoken 解析失败：{err}; body={text}"))?;
-    if parsed.errcode != 0 {
-        return Err(format!(
-            "企业微信 gettoken 失败：{} {}",
-            parsed.errcode, parsed.errmsg
-        ));
+    if !status.is_success() {
+        return Err(format!("企业微信查询扫码结果失败 HTTP {status}: {text}"));
     }
-    if parsed.access_token.trim().is_empty() {
-        return Err("企业微信 gettoken 响应缺少 access_token。".to_string());
-    }
-    Ok(parsed.access_token)
+    serde_json::from_str(&text)
+        .map_err(|err| format!("企业微信扫码结果解析失败：{err}; body={text}"))
 }
 
-async fn wecom_verify_auth_code(
-    client: &reqwest::Client,
-    access_token: &str,
-    code: &str,
-) -> Result<(), String> {
-    let url = format!(
-        "https://qyapi.weixin.qq.com/cgi-bin/auth/getuserinfo?access_token={access_token}&code={code}"
-    );
-    let response = client
-        .get(url)
-        .send()
-        .await
-        .map_err(|err| err.to_string())?;
-    let text = response.text().await.map_err(|err| err.to_string())?;
-    let parsed: WeComTokenResponse = serde_json::from_str(&text)
-        .map_err(|err| format!("企业微信 getuserinfo 解析失败：{err}; body={text}"))?;
-    if parsed.errcode != 0 {
-        return Err(format!(
-            "企业微信扫码授权校验失败：{} {}",
-            parsed.errcode, parsed.errmsg
-        ));
+fn dingtalk_poll_credentials(value: &serde_json::Value) -> Option<(String, String)> {
+    const ID_KEYS: &[&str] = &["client_id", "app_key", "appKey", "clientId"];
+    const SECRET_KEYS: &[&str] = &["client_secret", "app_secret", "appSecret", "clientSecret"];
+    for id_key in ID_KEYS {
+        for secret_key in SECRET_KEYS {
+            let client_id = value
+                .get(*id_key)
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("")
+                .trim();
+            let client_secret = value
+                .get(*secret_key)
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("")
+                .trim();
+            if !client_id.is_empty() && !client_secret.is_empty() {
+                return Some((client_id.to_string(), client_secret.to_string()));
+            }
+        }
     }
-    Ok(())
+    for nested_key in ["result", "data", "auth_data", "authData"] {
+        if let Some(nested) = value.get(nested_key) {
+            if let Some(found) = dingtalk_poll_credentials(nested) {
+                return Some(found);
+            }
+        }
+    }
+    None
+}
+
+fn record_dingtalk_registration_poll(
+    status: &Arc<Mutex<QrSetupStatus>>,
+    poll_count: usize,
+    value: &serde_json::Value,
+) {
+    if let Ok(mut status) = status.lock() {
+        let poll_status = value
+            .get("status")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("WAITING");
+        status.state = "waiting_scan".to_string();
+        status.message = format!("等待钉钉扫码确认（{poll_status}）…");
+        status
+            .output
+            .push(format!("poll #{poll_count}: {}", compact_json(value)));
+        if status.output.len() > 300 {
+            status.output.drain(0..100);
+        }
+    }
+}
+
+fn record_wecom_qr_poll(
+    status: &Arc<Mutex<QrSetupStatus>>,
+    poll_count: usize,
+    value: &serde_json::Value,
+) {
+    if let Ok(mut status) = status.lock() {
+        let poll_status = value
+            .get("data")
+            .and_then(|item| item.get("status"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("init");
+        status.state = "waiting_scan".to_string();
+        status.message = format!("等待企业微信扫码确认（{poll_status}）…");
+        status
+            .output
+            .push(format!("poll #{poll_count}: {}", compact_json(value)));
+        if status.output.len() > 300 {
+            status.output.drain(0..100);
+        }
+    }
 }
 
 fn qr_svg(content: &str) -> Result<String, String> {
@@ -2609,35 +2729,27 @@ async fn start_dingtalk_qr_setup(
     options: ClientOptions,
     state: tauri::State<'_, BridgeState>,
 ) -> Result<QrSetupStatus, String> {
-    let binding = channel_binding_status(&app, &options)?;
-    if !binding.ready {
-        return start_qr_setup_missing_fields(&state, binding);
-    }
-    let fields = options.channel_fields.clone().unwrap_or_default();
-    let client_id = non_empty(fields.get("client_id"))
-        .ok_or_else(|| "钉钉 Client ID（AppKey）缺失。".to_string())?;
-    let client_secret = non_empty(fields.get("client_secret"))
-        .ok_or_else(|| "钉钉 Client Secret（AppSecret）缺失。".to_string())?;
-
     write_config_file(&app, &options)?;
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(40))
+        .build()
+        .map_err(|err| err.to_string())?;
+    let begin = begin_dingtalk_registration(&client).await?;
     let session_id = setup_session_id("dingtalk")?;
-    let redirect_uri = loopback_oauth_redirect_uri(DINGTALK_OAUTH_PORT, DINGTALK_OAUTH_PATH);
-    let auth_url = dingtalk_oauth_authorize_url(&client_id, &session_id, &redirect_uri)?;
+    let qr_url = begin.verification_uri_complete.clone();
 
     let status = Arc::new(Mutex::new(QrSetupStatus {
         session_id: session_id.clone(),
         platform: "dingtalk".to_string(),
         state: "waiting_scan".to_string(),
-        message: format!(
-            "请使用钉钉扫描下方二维码并确认授权。首次使用前，请在开放平台应用「安全设置」添加回调地址：{redirect_uri}"
-        ),
-        user_code: None,
-        qr_url: Some(auth_url.clone()),
-        qr_svg: qr_svg(&auth_url).ok(),
+        message: "请使用钉钉 App 扫描下方二维码，点击「一键创建新机器人」完成授权。".to_string(),
+        user_code: begin.user_code.clone(),
+        qr_url: Some(qr_url.clone()),
+        qr_svg: qr_svg(&qr_url).ok(),
         output: vec![
-            "钉钉 OAuth 扫码绑定已启动。".to_string(),
-            format!("回调地址（需在开放平台登记）：{redirect_uri}"),
-            format!("授权 URL: {auth_url}"),
+            "钉钉设备流扫码绑定已启动（与 dingtalk-openclaw-connector 相同流程）。".to_string(),
+            format!("device_code: {}", begin.device_code),
+            format!("URL: {qr_url}"),
         ],
         done: false,
         success: None,
@@ -2649,11 +2761,10 @@ async fn start_dingtalk_qr_setup(
         .map_err(|err| err.to_string())?
         .insert(session_id.clone(), Arc::clone(&status));
 
-    tauri::async_runtime::spawn(poll_dingtalk_oauth_setup(
+    tauri::async_runtime::spawn(poll_dingtalk_registration_setup(
         app,
-        client_id,
-        client_secret,
-        session_id,
+        client,
+        begin,
         options,
         Arc::clone(&status),
     ));
@@ -2661,83 +2772,137 @@ async fn start_dingtalk_qr_setup(
     qr_setup_status_from_arc(&status)
 }
 
-async fn poll_dingtalk_oauth_setup(
+async fn poll_dingtalk_registration_setup(
     app: AppHandle,
-    client_id: String,
-    client_secret: String,
-    session_id: String,
+    client: reqwest::Client,
+    begin: DingTalkRegistrationBegin,
     options: ClientOptions,
     status: Arc<Mutex<QrSetupStatus>>,
 ) {
-    if let Ok(mut status) = status.lock() {
-        status.message = "等待钉钉扫码授权…".to_string();
-    }
+    let timeout_at = std::time::Instant::now()
+        + std::time::Duration::from_secs(begin.expires_in_seconds.min(7200));
+    let interval = begin.interval_seconds.max(3);
+    let retry_window = std::time::Duration::from_secs(DINGTALK_REGISTRATION_RETRY_WINDOW_SECS);
+    let mut poll_count = 0usize;
+    let mut retry_started: Option<std::time::Instant> = None;
 
-    let client = match reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(40))
-        .build()
-    {
-        Ok(client) => client,
-        Err(err) => {
-            finish_qr_setup(&status, false, format!("创建 HTTP 客户端失败：{err}"));
-            return;
+    while std::time::Instant::now() < timeout_at {
+        poll_count += 1;
+        tokio::time::sleep(std::time::Duration::from_secs(interval)).await;
+
+        let poll = match poll_dingtalk_registration(&client, &begin.device_code).await {
+            Ok(value) => value,
+            Err(err) => {
+                if retry_started.is_none() {
+                    retry_started = Some(std::time::Instant::now());
+                }
+                if retry_started.is_some_and(|started| started.elapsed() < retry_window) {
+                    if let Ok(mut status) = status.lock() {
+                        status.message = format!("网络波动，继续等待扫码… ({err})");
+                    }
+                    continue;
+                }
+                finish_qr_setup(&status, false, err);
+                return;
+            }
+        };
+        record_dingtalk_registration_poll(&status, poll_count, &poll);
+
+        let poll_status = poll
+            .get("status")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_uppercase();
+        match poll_status.as_str() {
+            "WAITING" => {
+                retry_started = None;
+            }
+            "SUCCESS" => {
+                let Some((client_id, client_secret)) = dingtalk_poll_credentials(&poll) else {
+                    finish_qr_setup(
+                        &status,
+                        false,
+                        "钉钉授权成功，但响应缺少 client_id/client_secret（或 app_key/app_secret）。请展开扫码排错信息查看 poll 原文。"
+                            .to_string(),
+                    );
+                    return;
+                };
+
+                if let Ok(mut status) = status.lock() {
+                    status.state = "writing_config".to_string();
+                    status.message = "扫码成功，正在写入钉钉配置…".to_string();
+                }
+
+                let mut next_options = options.clone();
+                let mut fields = next_options.channel_fields.take().unwrap_or_default();
+                fields.insert("client_id".to_string(), client_id.clone());
+                fields.insert("client_secret".to_string(), client_secret);
+                fields.insert("connection_mode".to_string(), "stream".to_string());
+                if non_empty(fields.get("robot_code")).is_none() {
+                    fields.insert("robot_code".to_string(), client_id);
+                }
+                next_options.channel_fields = Some(fields);
+
+                match write_config_file(&app, &next_options) {
+                    Ok(path) => finish_qr_setup(
+                        &status,
+                        true,
+                        format!(
+                            "钉钉扫码绑定完成，配置已保存：{}。请确认应用已启用 Stream 机器人能力，然后启动 Bridge。",
+                            path.display()
+                        ),
+                    ),
+                    Err(err) => finish_qr_setup(
+                        &status,
+                        false,
+                        format!("钉钉扫码成功，但保存配置失败：{err}"),
+                    ),
+                }
+                return;
+            }
+            "FAIL" => {
+                let reason = poll
+                    .get("fail_reason")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("authorization failed");
+                if retry_started.is_none() {
+                    retry_started = Some(std::time::Instant::now());
+                }
+                if retry_started.is_some_and(|started| started.elapsed() < retry_window) {
+                    continue;
+                }
+                finish_qr_setup(&status, false, format!("钉钉授权失败：{reason}"));
+                return;
+            }
+            "EXPIRED" => {
+                if retry_started.is_none() {
+                    retry_started = Some(std::time::Instant::now());
+                }
+                if retry_started.is_some_and(|started| started.elapsed() < retry_window) {
+                    continue;
+                }
+                finish_qr_setup(
+                    &status,
+                    false,
+                    "钉钉扫码会话已过期，请重新扫码。".to_string(),
+                );
+                return;
+            }
+            other => {
+                if retry_started.is_none() {
+                    retry_started = Some(std::time::Instant::now());
+                }
+                if retry_started.is_some_and(|started| started.elapsed() < retry_window) {
+                    continue;
+                }
+                finish_qr_setup(&status, false, format!("钉钉授权返回未知状态：{other}"));
+                return;
+            }
         }
-    };
-
-    let code = match wait_loopback_oauth_code(DINGTALK_OAUTH_PORT, DINGTALK_OAUTH_PATH, &session_id)
-        .await
-    {
-        Ok(code) => code,
-        Err(err) => {
-            finish_qr_setup(&status, false, err);
-            return;
-        }
-    };
-
-    if let Ok(mut status) = status.lock() {
-        status.state = "writing_config".to_string();
-        status.message = "扫码成功，正在写入钉钉配置…".to_string();
-        status
-            .output
-            .push(format!("OAuth code received for session {session_id}"));
     }
 
-    let token = match dingtalk_exchange_user_token(&client, &client_id, &client_secret, &code).await
-    {
-        Ok(token) => token,
-        Err(err) => {
-            finish_qr_setup(&status, false, err);
-            return;
-        }
-    };
-
-    let mut next_options = options.clone();
-    let mut fields = next_options.channel_fields.take().unwrap_or_default();
-    fields.insert("client_id".to_string(), client_id.clone());
-    fields.insert("client_secret".to_string(), client_secret);
-    if non_empty(fields.get("robot_code")).is_none() {
-        fields.insert("robot_code".to_string(), client_id.clone());
-    }
-    if !token.corp_id.trim().is_empty() {
-        fields.insert("corp_id".to_string(), token.corp_id.trim().to_string());
-    }
-    next_options.channel_fields = Some(fields);
-
-    match write_config_file(&app, &next_options) {
-        Ok(path) => finish_qr_setup(
-            &status,
-            true,
-            format!(
-                "钉钉扫码授权完成，配置已保存：{}。请确认应用已启用 Stream 机器人能力，然后启动 Bridge。",
-                path.display()
-            ),
-        ),
-        Err(err) => finish_qr_setup(
-            &status,
-            false,
-            format!("钉钉扫码成功，但保存配置失败：{err}"),
-        ),
-    }
+    finish_qr_setup(&status, false, "等待钉钉扫码授权超时，请重试。".to_string());
 }
 
 async fn start_wecom_qr_setup(
@@ -2745,37 +2910,26 @@ async fn start_wecom_qr_setup(
     options: ClientOptions,
     state: tauri::State<'_, BridgeState>,
 ) -> Result<QrSetupStatus, String> {
-    let binding = channel_binding_status(&app, &options)?;
-    if !binding.ready {
-        return start_qr_setup_missing_fields(&state, binding);
-    }
-    let fields = options.channel_fields.clone().unwrap_or_default();
-    let corp_id = non_empty(fields.get("corp_id"))
-        .ok_or_else(|| "企业微信 Corp ID 缺失。".to_string())?;
-    let corp_secret = non_empty(fields.get("corp_secret"))
-        .ok_or_else(|| "企业微信 Corp Secret 缺失。".to_string())?;
-    let agent_id = non_empty(fields.get("agent_id"))
-        .ok_or_else(|| "企业微信 Agent ID 缺失。".to_string())?;
-
     write_config_file(&app, &options)?;
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(40))
+        .build()
+        .map_err(|err| err.to_string())?;
+    let (scode, auth_url) = wecom_fetch_qr_generate(&client).await?;
     let session_id = setup_session_id("wecom")?;
-    let redirect_uri = loopback_oauth_redirect_uri(WECOM_OAUTH_PORT, WECOM_OAUTH_PATH);
-    let auth_url = wecom_qr_connect_url(&corp_id, &agent_id, &session_id, &redirect_uri)?;
 
     let status = Arc::new(Mutex::new(QrSetupStatus {
         session_id: session_id.clone(),
         platform: "wecom".to_string(),
         state: "waiting_scan".to_string(),
-        message: format!(
-            "请使用企业微信扫描下方二维码并确认授权。请在应用「网页授权及 JS-SDK」可信域名中允许 127.0.0.1，并配置授权回调域；本地回调：{redirect_uri}"
-        ),
+        message: "请使用企业微信扫描下方二维码，在手机上确认创建智能机器人。".to_string(),
         user_code: None,
         qr_url: Some(auth_url.clone()),
         qr_svg: qr_svg(&auth_url).ok(),
         output: vec![
-            "企业微信 OAuth 扫码校验已启动。".to_string(),
-            format!("回调地址：{redirect_uri}"),
-            format!("授权 URL: {auth_url}"),
+            "企业微信 AI 二维码扫码绑定已启动（与 wecom-openclaw-cli 相同流程）。".to_string(),
+            format!("scode: {scode}"),
+            format!("URL: {auth_url}"),
         ],
         done: false,
         success: None,
@@ -2787,12 +2941,10 @@ async fn start_wecom_qr_setup(
         .map_err(|err| err.to_string())?
         .insert(session_id.clone(), Arc::clone(&status));
 
-    tauri::async_runtime::spawn(poll_wecom_oauth_setup(
+    tauri::async_runtime::spawn(poll_wecom_qr_setup(
         app,
-        corp_id,
-        corp_secret,
-        agent_id,
-        session_id,
+        client,
+        scode,
         options,
         Arc::clone(&status),
     ));
@@ -2800,79 +2952,100 @@ async fn start_wecom_qr_setup(
     qr_setup_status_from_arc(&status)
 }
 
-async fn poll_wecom_oauth_setup(
+async fn poll_wecom_qr_setup(
     app: AppHandle,
-    corp_id: String,
-    corp_secret: String,
-    agent_id: String,
-    session_id: String,
+    client: reqwest::Client,
+    scode: String,
     options: ClientOptions,
     status: Arc<Mutex<QrSetupStatus>>,
 ) {
-    if let Ok(mut status) = status.lock() {
-        status.message = "等待企业微信扫码授权…".to_string();
-    }
+    let timeout_at =
+        std::time::Instant::now() + std::time::Duration::from_secs(WECOM_QR_POLL_TIMEOUT_SECS);
+    let mut poll_count = 0usize;
 
-    let client = match reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(40))
-        .build()
-    {
-        Ok(client) => client,
-        Err(err) => {
-            finish_qr_setup(&status, false, format!("创建 HTTP 客户端失败：{err}"));
+    while std::time::Instant::now() < timeout_at {
+        poll_count += 1;
+        tokio::time::sleep(std::time::Duration::from_secs(WECOM_QR_POLL_INTERVAL_SECS)).await;
+
+        let poll = match wecom_poll_qr_result(&client, &scode).await {
+            Ok(value) => value,
+            Err(err) => {
+                finish_qr_setup(&status, false, err);
+                return;
+            }
+        };
+        record_wecom_qr_poll(&status, poll_count, &poll);
+
+        let data = poll.get("data").unwrap_or(&poll);
+        let poll_status = data
+            .get("status")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_lowercase();
+        if poll_status != "success" {
+            continue;
+        }
+
+        let bot_info = data.get("bot_info").unwrap_or(&serde_json::Value::Null);
+        let bot_id = bot_info
+            .get("botid")
+            .or_else(|| bot_info.get("bot_id"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        let bot_secret = bot_info
+            .get("secret")
+            .or_else(|| bot_info.get("bot_secret"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if bot_id.is_empty() || bot_secret.is_empty() {
+            finish_qr_setup(
+                &status,
+                false,
+                "企业微信扫码成功，但响应缺少 bot_id 或 secret。".to_string(),
+            );
             return;
         }
-    };
 
-    let code = match wait_loopback_oauth_code(WECOM_OAUTH_PORT, WECOM_OAUTH_PATH, &session_id).await
-    {
-        Ok(code) => code,
-        Err(err) => {
-            finish_qr_setup(&status, false, err);
-            return;
+        if let Ok(mut status) = status.lock() {
+            status.state = "writing_config".to_string();
+            status.message = "扫码成功，正在写入企业微信配置…".to_string();
         }
-    };
 
-    if let Ok(mut status) = status.lock() {
-        status.state = "writing_config".to_string();
-        status.message = "扫码成功，正在校验企业微信凭证…".to_string();
-    }
+        let mut next_options = options.clone();
+        let mut fields = next_options.channel_fields.take().unwrap_or_default();
+        fields.insert("connection_mode".to_string(), "websocket".to_string());
+        fields.insert("bot_id".to_string(), bot_id);
+        fields.insert("bot_secret".to_string(), bot_secret);
+        next_options.channel_fields = Some(fields);
 
-    let access_token = match wecom_get_access_token(&client, &corp_id, &corp_secret).await {
-        Ok(token) => token,
-        Err(err) => {
-            finish_qr_setup(&status, false, err);
-            return;
+        match write_config_file(&app, &next_options) {
+            Ok(path) => finish_qr_setup(
+                &status,
+                true,
+                format!(
+                    "企业微信智能机器人扫码绑定完成，配置已保存：{}。请启动 Bridge 连接 WebSocket。",
+                    path.display()
+                ),
+            ),
+            Err(err) => finish_qr_setup(
+                &status,
+                false,
+                format!("企业微信扫码成功，但保存配置失败：{err}"),
+            ),
         }
-    };
-
-    if let Err(err) = wecom_verify_auth_code(&client, &access_token, &code).await {
-        finish_qr_setup(&status, false, err);
         return;
     }
 
-    let mut next_options = options.clone();
-    let mut fields = next_options.channel_fields.take().unwrap_or_default();
-    fields.insert("corp_id".to_string(), corp_id);
-    fields.insert("corp_secret".to_string(), corp_secret);
-    fields.insert("agent_id".to_string(), agent_id);
-    next_options.channel_fields = Some(fields);
-
-    match write_config_file(&app, &next_options) {
-        Ok(path) => finish_qr_setup(
-            &status,
-            true,
-            format!(
-                "企业微信扫码授权校验通过，配置已保存：{}。Webhook 模式仍需在管理后台保存回调 URL。",
-                path.display()
-            ),
-        ),
-        Err(err) => finish_qr_setup(
-            &status,
-            false,
-            format!("企业微信扫码成功，但保存配置失败：{err}"),
-        ),
-    }
+    finish_qr_setup(
+        &status,
+        false,
+        "等待企业微信扫码授权超时，请重试。".to_string(),
+    );
 }
 
 async fn poll_weixin_qr_setup(
@@ -3353,7 +3526,7 @@ fn required_field_names(platform: &str) -> &'static [&'static str] {
         "telegram" | "discord" | "line" | "max" | "weixin" => &["token"],
         "slack" => &["bot_token", "app_token"],
         "qq" => &["ws_url"],
-        "wecom" => &["corp_id", "corp_secret", "agent_id"],
+        "wecom" => &["bot_id", "bot_secret"],
         "qqbot" | "weibo" => &["app_id", "app_secret"],
         "http" | "bridge" => &["listen"],
         _ => &[],
@@ -3364,6 +3537,20 @@ fn missing_required_fields(platform: &str, fields: &HashMap<String, String>) -> 
     if matches!(platform, "qqbot" | "weibo") && non_empty(fields.get("token")).is_some() {
         return Vec::new();
     }
+    if platform == "wecom" {
+        let mode =
+            non_empty(fields.get("connection_mode")).unwrap_or_else(|| "websocket".to_string());
+        let keys: &[&str] = if mode == "webhook" {
+            &["corp_id", "corp_secret", "agent_id"]
+        } else {
+            &["bot_id", "bot_secret"]
+        };
+        return keys
+            .iter()
+            .filter(|key| non_empty(fields.get(**key)).is_none())
+            .map(|key| (*key).to_string())
+            .collect();
+    }
     required_field_names(platform)
         .iter()
         .filter(|key| non_empty(fields.get(**key)).is_none())
@@ -3373,6 +3560,25 @@ fn missing_required_fields(platform: &str, fields: &HashMap<String, String>) -> 
 
 fn required_fields_ready(platform: &str, fields: &HashMap<String, String>) -> bool {
     missing_required_fields(platform, fields).is_empty()
+}
+
+fn ensure_channel_ready_for_bridge(app: &AppHandle, options: &ClientOptions) -> Result<(), String> {
+    let platform = options.platform.trim().to_lowercase();
+    let fields = resolved_channel_fields(app, options)?;
+    if required_fields_ready(&platform, &fields) {
+        return Ok(());
+    }
+    let missing = missing_required_fields(&platform, &fields);
+    if platform_supports_auto_qr(&platform) {
+        return Err(format!(
+            "通道 `{platform}` 尚未完成绑定，缺少：{}。请先在 Channel 页点击「扫码绑定」完成授权后再启动。",
+            missing.join(", ")
+        ));
+    }
+    Err(format!(
+        "通道 `{platform}` 缺少必填字段：{}。请补全并保存后再启动。",
+        missing.join(", ")
+    ))
 }
 
 fn channel_binding_status(
@@ -3430,11 +3636,11 @@ fn guided_next_step(platform: &str) -> String {
                 .to_string()
         }
         "dingtalk" => {
-            "在钉钉开放平台创建 Stream 机器人应用，填写 Client ID 与 Client Secret 后使用客户端扫码授权；Robot Code 可留空（默认与 Client ID 相同）。"
+            "点击「扫码绑定」，使用钉钉 App 扫码并一键创建机器人，自动写入 Client ID 与 Client Secret。"
                 .to_string()
         }
         "wecom" => {
-            "在企业微信管理后台创建自建应用，填写 corp_id、corp_secret、agent_id 后使用客户端扫码校验授权。"
+            "点击「扫码绑定」，使用企业微信扫码创建智能机器人，自动写入 Bot ID 与 Secret（WebSocket 模式）。"
                 .to_string()
         }
         _ => "填写完整字段后保存 Channel 配置。".to_string(),
@@ -3446,8 +3652,10 @@ fn guided_setup_message(platform: &str) -> &'static str {
         "qq" => {
             "QQ 网关配置已保存。请在 NapCat/LLOneBot 等网关中扫码登录，不要在本客户端等待自动授权。"
         }
-        "dingtalk" => "钉钉配置已保存。请确认应用已开通 Stream 机器人能力，并完成扫码授权。",
-        "wecom" => "企业微信配置已保存。Webhook 模式仍需在管理后台配置回调 URL 与 Token。",
+        "dingtalk" => "钉钉配置已保存。请确认应用已开通 Stream 机器人能力。",
+        "wecom" => {
+            "企业微信配置已保存。WebSocket 模式扫码后即可启动 Bridge；Webhook 模式仍需配置回调。"
+        }
         _ => "Channel 配置已保存，请按平台说明完成剩余步骤。",
     }
 }
@@ -4318,7 +4526,7 @@ fn resolved_channel_fields(
     {
         let db = open_client_db(app)?;
         let stored = load_channel_config(&db, connection_id, &platform)?;
-        fields.extend(stored);
+        merge_stored_fields(&mut fields, stored);
     }
     Ok(fields)
 }
@@ -4481,10 +4689,92 @@ fn strip_ansi_sequences(input: &str) -> String {
     out
 }
 
-fn resolve_exe_path(input: &str) -> Result<String, String> {
-    resolve_existing_path(input)
+fn resolve_exe_path(app: &AppHandle, input: &str) -> Result<String, String> {
+    resolve_bridge_executable(app, input)
         .and_then(|path| path.to_str().map(str::to_string))
-        .ok_or_else(|| format!("executable not found: {input}"))
+        .ok_or_else(|| format_bridge_exe_not_found(app, input))
+}
+
+fn format_bridge_exe_not_found(app: &AppHandle, input: &str) -> String {
+    let trimmed = input.trim();
+    let hint = default_dev_paths().exe_path;
+    let bundled = bundled_agentlink_exe_path(app)
+        .map(|path| path.display().to_string())
+        .unwrap_or_default();
+    if bundled.is_empty() {
+        format!(
+            "找不到可执行的 AgentLink 程序（输入: {trimmed:?}）。请编译主程序 `cargo build --release`，或在「连接」页用「选择程序」指定 agentlink；开发环境默认路径：{hint}"
+        )
+    } else {
+        format!(
+            "找不到可执行的 AgentLink 程序（输入: {trimmed:?}）。请用「选择程序」指定 agentlink，或编译主程序；开发默认：{hint}；安装包内置：{bundled}"
+        )
+    }
+}
+
+fn map_bridge_spawn_error(exe: &str, err: &std::io::Error) -> String {
+    let mut message = format!("无法启动 `{exe}`：{err}");
+    if err.raw_os_error() == Some(13) {
+        message.push_str(
+            "。该路径可能不是可执行文件、无执行权限，或当前环境不允许启动外部程序；请在「连接」页重新选择 agentlink 可执行文件（开发环境可先执行 `cargo build --release`）。",
+        );
+    }
+    message
+}
+
+fn resolve_bridge_executable(app: &AppHandle, input: &str) -> Option<PathBuf> {
+    let trimmed = normalize_input_path(input);
+    if trimmed.is_empty() {
+        return preferred_agentlink_paths(app)
+            .into_iter()
+            .find(|path| is_executable_file(path))
+            .and_then(|path| path.canonicalize().ok().or(Some(path)));
+    }
+
+    let path = Path::new(&trimmed);
+    let explicit = path.is_absolute() || trimmed.contains('/') || trimmed.contains('\\');
+    if explicit {
+        return resolve_existing_executable_path(&trimmed);
+    }
+
+    if is_agentlink_exe_name(path.file_name().and_then(|name| name.to_str())) {
+        if let Some(found) = preferred_agentlink_paths(app)
+            .into_iter()
+            .find(|candidate| is_executable_file(candidate))
+        {
+            return found.canonicalize().ok().or(Some(found));
+        }
+    }
+
+    resolve_existing_executable_path(&trimmed)
+}
+
+fn preferred_agentlink_paths(app: &AppHandle) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    if let Some(repo_root) = manifest_repo_root(&PathBuf::from(env!("CARGO_MANIFEST_DIR"))) {
+        for profile in ["release", "debug"] {
+            for name in agentlink_exe_file_names() {
+                paths.push(repo_root.join("target").join(profile).join(name));
+            }
+        }
+    }
+    if let Some(path) = bundled_agentlink_exe_path(app) {
+        paths.push(path);
+    }
+    paths.extend(standard_agentlink_exe_rel_paths());
+    paths
+}
+
+fn resolve_existing_executable_path(input: &str) -> Option<PathBuf> {
+    for variant in path_lookup_variants(input) {
+        if let Some(found) = candidate_paths(&variant)
+            .into_iter()
+            .find(|path| is_executable_file(path))
+        {
+            return found.canonicalize().ok().or(Some(found));
+        }
+    }
+    None
 }
 
 fn resolve_existing_path(input: &str) -> Option<PathBuf> {
@@ -4639,11 +4929,34 @@ fn resolve_config_read_path(app: &AppHandle, input: &str) -> Result<PathBuf, Str
 }
 
 fn normalize_input_path(input: &str) -> String {
-    let trimmed = input.trim();
+    let trimmed = expand_tilde_path(input.trim());
     if cfg!(windows) {
-        trimmed.to_string()
+        trimmed
     } else {
         trimmed.replace('\\', "/")
+    }
+}
+
+fn expand_tilde_path(input: &str) -> String {
+    if input == "~" {
+        return home_dir_string().unwrap_or_else(|| input.to_string());
+    }
+    if let Some(rest) = input.strip_prefix("~/") {
+        if let Some(home) = home_dir_string() {
+            return format!("{}/{}", home.trim_end_matches('/'), rest);
+        }
+    }
+    input.to_string()
+}
+
+fn home_dir_string() -> Option<String> {
+    #[cfg(unix)]
+    {
+        std::env::var_os("HOME").map(|value| value.to_string_lossy().into_owned())
+    }
+    #[cfg(windows)]
+    {
+        std::env::var_os("USERPROFILE").map(|value| value.to_string_lossy().into_owned())
     }
 }
 
@@ -4976,6 +5289,29 @@ mod channel_binding_tests {
     }
 
     #[test]
+    fn dingtalk_poll_credentials_reads_client_id_fields() {
+        let poll = serde_json::json!({
+            "status": "SUCCESS",
+            "client_id": "cid",
+            "client_secret": "sec"
+        });
+        let (id, secret) = dingtalk_poll_credentials(&poll).expect("credentials");
+        assert_eq!(id, "cid");
+        assert_eq!(secret, "sec");
+    }
+
+    #[test]
+    fn dingtalk_poll_credentials_reads_app_key_aliases() {
+        let poll = serde_json::json!({
+            "status": "SUCCESS",
+            "data": { "app_key": "key", "app_secret": "sec" }
+        });
+        let (id, secret) = dingtalk_poll_credentials(&poll).expect("credentials");
+        assert_eq!(id, "key");
+        assert_eq!(secret, "sec");
+    }
+
+    #[test]
     fn dingtalk_binding_does_not_require_robot_code() {
         let fields = HashMap::from([
             ("client_id".to_string(), "id".to_string()),
@@ -5014,6 +5350,23 @@ mod path_resolution_tests {
             .join("release")
             .join(agentlink_exe_file_names()[0]);
         assert!(release_exe.is_file(), "missing {}", release_exe.display());
+    }
+
+    #[test]
+    fn resolves_bare_agentlink_name_to_executable_file() {
+        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let previous = std::env::current_dir().ok();
+        std::env::set_current_dir(&manifest).expect("set cwd");
+        let resolved = resolve_existing_executable_path("agentlink");
+        if let Some(dir) = previous {
+            let _ = std::env::set_current_dir(dir);
+        }
+        let path = resolved.expect("bare agentlink should resolve");
+        assert!(
+            is_executable_file(&path),
+            "resolved path should be executable: {}",
+            path.display()
+        );
     }
 
     #[test]

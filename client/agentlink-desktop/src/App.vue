@@ -1,4 +1,4 @@
-﻿<script setup>
+<script setup>
 import { computed, nextTick, reactive, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { getVersion } from "@tauri-apps/api/app";
@@ -51,11 +51,12 @@ const CHANNELS = [
     label: "钉钉",
     kind: "扫码/密钥",
     scan: true,
-    summary: "在钉钉开放平台创建 Stream 机器人应用，填写 Client ID 与 Client Secret 后扫码授权；Robot Code 可留空。",
+    summary: "点击「扫码绑定」，用钉钉 App 扫码并一键创建机器人，自动写入 Client ID 与 Client Secret；也可在高级选项中手动填写。",
     required: ["client_id", "client_secret"],
     fields: [
       ["client_id", "Client ID", ""],
       ["client_secret", "Client Secret", "", "password"],
+      ["connection_mode", "Connection Mode", "stream"],
       ["robot_code", "Robot Code", ""],
       ["listen", "Listen", "127.0.0.1:18300"],
       ["callback_path", "Callback Path", "/dingtalk/webhook"]
@@ -127,6 +128,9 @@ const CHANNELS = [
     summary: "在企业微信管理后台创建自建应用，填写 corp_id、corp_secret、agent_id 后扫码校验授权；Webhook 仍需配置回调。",
     required: ["corp_id", "corp_secret", "agent_id"],
     fields: [
+      ["bot_id", "Bot ID", ""],
+      ["bot_secret", "Bot Secret", "", "password"],
+      ["connection_mode", "Connection Mode", "websocket"],
       ["corp_id", "Corp ID", ""],
       ["corp_secret", "Corp Secret", "", "password"],
       ["agent_id", "Agent ID", ""],
@@ -292,7 +296,18 @@ const DEFAULT_WORK_DIR = DEFAULTS.workDir;
 const DEFAULT_EXE_PATH = DEFAULTS.exePath;
 const DEFAULT_CONFIG_PATH = DEFAULTS.configPath;
 const defaultConfigPath = () => DEFAULT_CONFIG_PATH;
-const DIRECT_SEND_CHANNELS = new Set(["http", "feishu", "lark", "telegram", "dingtalk", "slack", "discord", "line", "weixin"]);
+const DIRECT_SEND_CHANNELS = new Set([
+  "http",
+  "feishu",
+  "lark",
+  "telegram",
+  "dingtalk",
+  "slack",
+  "discord",
+  "line",
+  "weixin",
+  "wecom"
+]);
 
 function defaultsFor(fields) {
   return Object.fromEntries(fields.map(([name, _label, value]) => [name, value ?? ""]));
@@ -514,7 +529,25 @@ const activeTarget = computed(() => {
 const activeTargetKey = computed(() => targetKey(activeTarget.value));
 const channelTargetOptions = computed(() => collectChannelTargets(connection.value.selectedChannel));
 const activeTargetLock = computed(() => targetLock(activeTargetKey.value));
-const canStartBridge = computed(() => !bridgeRuntime.running && !operationRunning.value && !activeTargetLock.value);
+const canStartBridge = computed(
+  () =>
+    !bridgeRuntime.running &&
+    !operationRunning.value &&
+    !activeTargetLock.value &&
+    status.bindingReady &&
+    agentReady.value
+);
+const startBridgeBlockedReason = computed(() => {
+  if (bridgeRuntime.running) return "";
+  if (activeTargetLock.value) return t("test.targetLockedShort");
+  if (!status.bindingReady) {
+    return currentChannel.value.scan
+      ? t("connect.startBlockedScanBind", { channel: currentChannel.value.label })
+      : t("connect.startBlockedChannel", { channel: currentChannel.value.label });
+  }
+  if (!agentReady.value) return t("connect.startBlockedAgent");
+  return "";
+});
 const updateProgressPercent = computed(() => {
   if (!updateStatus.total) return 0;
   return Math.min(100, Math.round((updateStatus.downloaded / updateStatus.total) * 100));
@@ -534,14 +567,6 @@ const updateStateText = computed(() => {
 const currentTest = computed(() => connection.value.test ?? { messageType: "text", content: "" });
 const canAutoQrScan = computed(() => Boolean(currentChannel.value.scan));
 const canGuidedSetup = computed(() => Boolean(currentChannel.value.guided));
-const SCAN_CREDENTIAL_CHANNEL_IDS = new Set(["dingtalk", "wecom"]);
-const showScanCredentialFields = computed(
-  () => showScanBindMode.value && SCAN_CREDENTIAL_CHANNEL_IDS.has(connection.value.selectedChannel)
-);
-const scanCredentialFields = computed(() => {
-  const required = new Set(currentChannel.value.required ?? []);
-  return (currentChannel.value.fields ?? []).filter((field) => required.has(field[0]));
-});
 const showManualChannelFields = computed(() => {
   if (!canAutoQrScan.value) return true;
   return channelBindMode.value === "manual";
@@ -686,8 +711,7 @@ function chooseChannel(channel) {
   ensureTargets(channel.id);
   syncChannelFromConfigured(channel.id, false);
   syncChannelBindModeForChannel();
-  channelAdvancedOpen.value =
-    !channel.scan || SCAN_CREDENTIAL_CHANNEL_IDS.has(channel.id);
+  channelAdvancedOpen.value = !channel.scan;
   refreshStatus().then(() => maybeAutoStartScanBind());
   refreshChannelBindingHint().catch(() => {
     channelBindingHint.value = "";
@@ -1171,6 +1195,9 @@ async function loadClientState() {
         localePreference.value = saved.uiPreferences.locale ? saved.uiPreferences.locale : LOCALE_SYSTEM;
       }
       appendLog(t("log.ready"));
+      if (IS_DEV_LAYOUT) {
+        await ensureDevPaths();
+      }
       await ensureProductionPaths();
     } else {
       appendLog("SQLite 暂无连接数据，使用默认连接。");
@@ -1275,6 +1302,28 @@ async function applyRuntimeDefaults(target = connection.value) {
   target.configPath = defaults?.configPath || defaultConfigPath();
   target.workDir = defaults?.workDir || DEFAULT_WORK_DIR;
   return defaults;
+}
+
+function looksLikeBareAgentlinkExe(path) {
+  const value = String(path ?? "").trim().toLowerCase();
+  return !value || value === "agentlink" || value === "agentlink.exe";
+}
+
+async function ensureDevPaths() {
+  if (!IS_DEV_LAYOUT) return false;
+  const defaults = await invoke("default_dev_paths");
+  let changed = false;
+  for (const conn of state.connections) {
+    if (looksLikeBareAgentlinkExe(conn.exePath)) {
+      conn.exePath = defaults?.exePath || DEV_DEFAULT_EXE_PATH;
+      changed = true;
+    }
+  }
+  if (changed) {
+    appendLog(t("log.devPathsReset"));
+    await saveClientState("修正开发态 AgentLink 路径");
+  }
+  return changed;
 }
 
 async function ensureProductionPaths() {
@@ -1547,8 +1596,11 @@ function applyConfigSnapshot(snapshot) {
   connection.value.workDir = snapshot.workDir || connection.value.workDir;
   connection.value.selectedChannel = snapshot.selectedChannel || connection.value.selectedChannel;
   connection.value.selectedAgent = snapshot.selectedAgent || connection.value.selectedAgent;
-  if (snapshot.channelFields && connection.value.channelFields[connection.value.selectedChannel]) {
-    const channelId = connection.value.selectedChannel;
+  if (snapshot.channelFields) {
+    const channelId = snapshot.selectedChannel || connection.value.selectedChannel;
+    if (!connection.value.channelFields[channelId]) {
+      connection.value.channelFields[channelId] = {};
+    }
     const current = connection.value.channelFields[channelId] ?? {};
     connection.value.channelFields[channelId] = mergeChannelFields(current, snapshot.channelFields);
     persistChannelFieldsToSqlite(channelId).catch((error) => appendLog(`同步 Channel 到 SQLite 失败：${error}`));
@@ -1725,6 +1777,10 @@ function validateConfig() {
 function startBridge() {
   if (activeTargetLock.value) {
     notify("warning", "接收目标已被占用", `${activeTargetLock.value.connectionName} 正在使用该目标连接到 ${activeTargetLock.value.agentLabel}`);
+    return;
+  }
+  if (!status.bindingReady || !agentReady.value) {
+    notify("warning", t("connect.startBridge"), startBridgeBlockedReason.value || t("connect.startBlockedChannel", { channel: currentChannel.value.label }));
     return;
   }
   return run("启动", async () => {
@@ -2013,7 +2069,14 @@ listen("update-download-event", (event) => {
             <button type="button" class="secondary" @click="saveLocalState">{{ t('connect.saveLocal') }}</button>
             <button type="button" class="secondary" @click="loadConfigFromFile">{{ t('connect.loadConfig') }}</button>
             <button type="button" @click="validateConfig">{{ t('connect.validate') }}</button>
-            <button type="button" :disabled="!canStartBridge" @click="startBridge">{{ bridgeRuntime.running ? t('connect.bridgeStarted') : t('connect.startBridge') }}</button>
+            <button
+              type="button"
+              :disabled="!canStartBridge"
+              :title="startBridgeBlockedReason || undefined"
+              @click="startBridge"
+            >
+              {{ bridgeRuntime.running ? t('connect.bridgeStarted') : t('connect.startBridge') }}
+            </button>
             <button type="button" class="secondary" :disabled="!bridgeRuntime.running || operationRunning" @click="stopBridge">{{ t('connect.stopBridge') }}</button>
           </div>
         </div>
@@ -2094,19 +2157,6 @@ listen("update-download-event", (event) => {
             </div>
             <span class="pill" :class="{ good: status.bindingReady, bad: !status.bindingReady }">{{ channelBindingLabel() }}</span>
           </div>
-
-          <section v-if="showScanCredentialFields" class="scan-credential-box">
-            <p class="scan-credential-hint">{{ t('channel.fillBeforeScan') }}</p>
-            <div class="field-grid">
-              <label v-for="field in scanCredentialFields" :key="field[0]">
-                <span class="label-row">
-                  {{ field[1] }}
-                  <span v-if="fieldHelp(field[0])" class="help-dot" :title="fieldHelp(field[0])">?</span>
-                </span>
-                <input :type="field[3] || 'text'" v-model="currentChannelFields[field[0]]" />
-              </label>
-            </div>
-          </section>
 
           <div v-if="canAutoQrScan || canGuidedSetup" class="bind-row">
             <button

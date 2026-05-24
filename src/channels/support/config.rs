@@ -40,8 +40,12 @@ impl Default for LinePlatformConfig {
 #[derive(Debug, Clone)]
 pub struct WeComPlatformConfig {
     pub name: String,
+    pub connection_mode: String,
     pub listen: String,
     pub callback_path: String,
+    pub bot_id: Option<String>,
+    pub bot_secret: Option<String>,
+    pub websocket_url: String,
     pub secret: Option<String>,
     pub token: Option<String>,
     pub corp_id: Option<String>,
@@ -54,12 +58,24 @@ pub struct WeComPlatformConfig {
     pub dry_run: bool,
 }
 
+impl WeComPlatformConfig {
+    pub fn uses_websocket(&self) -> bool {
+        self.connection_mode
+            .trim()
+            .eq_ignore_ascii_case("websocket")
+    }
+}
+
 impl Default for WeComPlatformConfig {
     fn default() -> Self {
         Self {
             name: "wecom".to_string(),
+            connection_mode: "websocket".to_string(),
             listen: "127.0.0.1:18500".to_string(),
             callback_path: "/wecom/callback".to_string(),
+            bot_id: None,
+            bot_secret: None,
+            websocket_url: "wss://openws.work.weixin.qq.com".to_string(),
             secret: None,
             token: None,
             corp_id: None,
@@ -172,7 +188,44 @@ macro_rules! webhook_config_try_from {
 }
 
 webhook_config_try_from!(LinePlatformConfig, "line", "https://api.line.me");
-webhook_config_try_from!(WeComPlatformConfig, "wecom", "https://qyapi.weixin.qq.com");
+
+impl TryFrom<toml::value::Table> for WeComPlatformConfig {
+    type Error = anyhow::Error;
+
+    fn try_from(opts: toml::value::Table) -> Result<Self> {
+        let defaults = Self::default();
+        Ok(Self {
+            name: string_option(&opts, "name").unwrap_or_else(|| "wecom".to_string()),
+            connection_mode: string_option(&opts, "connection_mode")
+                .unwrap_or_else(|| defaults.connection_mode.clone()),
+            listen: string_option(&opts, "listen").unwrap_or_else(|| defaults.listen.clone()),
+            callback_path: string_option(&opts, "callback_path")
+                .unwrap_or_else(|| defaults.callback_path.clone()),
+            bot_id: string_option(&opts, "bot_id"),
+            bot_secret: string_option(&opts, "bot_secret"),
+            websocket_url: string_option(&opts, "websocket_url")
+                .unwrap_or_else(|| defaults.websocket_url.clone()),
+            secret: string_option(&opts, "secret")
+                .or_else(|| string_option(&opts, "channel_secret"))
+                .or_else(|| string_option(&opts, "corp_id")),
+            token: string_option(&opts, "token")
+                .or_else(|| string_option(&opts, "channel_token"))
+                .or_else(|| string_option(&opts, "corp_secret"))
+                .or_else(|| string_option(&opts, "agent_id")),
+            corp_id: string_option(&opts, "corp_id"),
+            corp_secret: string_option(&opts, "corp_secret"),
+            agent_id: string_option(&opts, "agent_id"),
+            callback_token: string_option(&opts, "callback_token"),
+            callback_aes_key: string_option(&opts, "callback_aes_key"),
+            api_base: string_option(&opts, "api_base")
+                .or_else(|| string_option(&opts, "api_base_url"))
+                .unwrap_or_else(|| "https://qyapi.weixin.qq.com".to_string()),
+            share_session_in_channel: bool_option(&opts, "share_session_in_channel")
+                .unwrap_or(false),
+            dry_run: bool_option(&opts, "dry_run").unwrap_or(false),
+        })
+    }
+}
 
 impl TryFrom<toml::value::Table> for PollPlatformConfig {
     type Error = anyhow::Error;

@@ -47,6 +47,9 @@
     "loadConfig": "Load config",
     "validate": "Validate",
     "startBridge": "Start",
+    "startBlockedScanBind": "Complete scan bind for {channel} on the Channel tab first",
+    "startBlockedChannel": "Complete {channel} configuration on the Channel tab first",
+    "startBlockedAgent": "Configure and check the Agent on the Agent tab first",
     "bridgeStarted": "Running",
     "stopBridge": "Stop",
     "statusTitle": "Status",
@@ -187,7 +190,8 @@
   "log": {
     "title": "Log",
     "refreshBridge": "Refresh Bridge log",
-    "ready": "Client ready. Create connections and pick channel and agent."
+    "ready": "Client ready. Create connections and pick channel and agent.",
+    "devPathsReset": "Reset AgentLink executable to dev default (target/release/agentlink)."
   },
   "status": {
     "configured": "Configured",
@@ -221,20 +225,20 @@
     "weixinHelp": "After scan, token and account_id are saved. Send a WeChat message to cache context_token.",
     "feishuHelp": "Scan fills app_id/app_secret. Prefer connection_mode=websocket.",
     "qqHelp": "Scan on the QQ gateway (e.g. NapCat), then set ws_url here.",
-    "dingtalkHelp": "Fill Client ID and Client Secret first, then scan. Register callback http://127.0.0.1:48188/dingtalk/oauth/callback in app security settings. Robot Code is optional.",
-    "wecomHelp": "Fill Corp ID, Corp Secret, and Agent ID first, then scan. Allow 127.0.0.1 for web OAuth; callback http://127.0.0.1:48189/wecom/oauth/callback.",
+    "dingtalkHelp": "No keys needed upfront. Scan with DingTalk, tap create robot on the page; Client ID and Client Secret are saved automatically. Robot Code is optional.",
+    "wecomHelp": "No keys needed upfront. Scan with WeCom and confirm creating the smart bot; Bot ID and Secret are saved for WebSocket mode.",
     "genericHelp": "Use the link below to finish setup on the platform console."
   },
   "channels": {
     "feishu": { "label": "Feishu", "kind": "Scan / keys", "summary": "WebSocket long connection; no public webhook required." },
     "lark": { "label": "Lark", "kind": "Scan / keys", "summary": "International Feishu; similar fields." },
-    "dingtalk": { "label": "DingTalk", "kind": "Scan / keys", "summary": "Stream bot app: fill Client ID/Secret, then scan to authorize." },
+    "dingtalk": { "label": "DingTalk", "kind": "Scan / keys", "summary": "Scan to bind; Client ID/Secret are filled automatically, or enter them under Advanced." },
     "telegram": { "label": "Telegram", "kind": "Bot token", "summary": "Create a bot via BotFather and paste the token." },
     "slack": { "label": "Slack", "kind": "Socket Mode", "summary": "Requires bot token and app-level token." },
     "discord": { "label": "Discord", "kind": "Bot token", "summary": "Gateway mode with bot token." },
     "qq": { "label": "QQ personal", "kind": "Gateway scan", "summary": "OneBot v11 gateway (NapCat/LLOneBot) scan on gateway side." },
     "weixin": { "label": "WeChat personal", "kind": "ilink scan", "summary": "Scan via ilink gateway; send a message to cache context_token." },
-    "wecom": { "label": "WeCom", "kind": "Scan / keys", "summary": "Self-built app: fill corp fields, then scan to verify OAuth." },
+    "wecom": { "label": "WeCom", "kind": "Scan / keys", "summary": "Scan to create a smart bot; Bot ID/Secret auto-filled. Use Advanced for webhook self-built apps." },
     "line": { "label": "LINE", "kind": "Webhook", "summary": "Messaging API webhook with channel secret and token." },
     "max": { "label": "MAX", "kind": "Bot token", "summary": "Bot API with polling or webhook." },
     "qqbot": { "label": "QQBot", "kind": "Gateway", "summary": "Official QQ bot gateway." },

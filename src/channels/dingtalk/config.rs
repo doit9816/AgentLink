@@ -7,6 +7,8 @@ pub struct DingTalkPlatformConfig {
     pub client_id: String,
     pub client_secret: String,
     pub robot_code: String,
+    /// `stream` (default) uses DingTalk gateway WebSocket; `webhook` listens locally.
+    pub connection_mode: String,
     pub listen: String,
     pub callback_path: String,
     pub share_session_in_channel: bool,
@@ -47,6 +49,8 @@ impl TryFrom<toml::value::Table> for DingTalkPlatformConfig {
             client_id: client_id.clone(),
             client_secret,
             robot_code: string_option(&opts, "robot_code").unwrap_or(client_id),
+            connection_mode: string_option(&opts, "connection_mode")
+                .unwrap_or_else(|| "stream".to_string()),
             listen,
             callback_path: string_option(&opts, "callback_path")
                 .unwrap_or_else(|| "/dingtalk/webhook".to_string()),

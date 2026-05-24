@@ -1,3 +1,4 @@
+use super::WeComPlatform;
 use crate::channels::support::*;
 
 pub(super) async fn wecom_verify(

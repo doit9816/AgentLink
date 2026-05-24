@@ -47,6 +47,9 @@
     "loadConfig": "读取配置",
     "validate": "校验",
     "startBridge": "启动",
+    "startBlockedScanBind": "请先在 Channel 完成「{channel}」扫码绑定",
+    "startBlockedChannel": "请先在 Channel 补全「{channel}」配置",
+    "startBlockedAgent": "请先在 Agent 页配置并检测 Agent 命令",
     "bridgeStarted": "已启动",
     "stopBridge": "停止",
     "statusTitle": "状态",
@@ -187,7 +190,8 @@
   "log": {
     "title": "日志",
     "refreshBridge": "刷新 Bridge 日志",
-    "ready": "客户端已就绪：可以创建多个连接，并分别选择通道与 Agent。"
+    "ready": "客户端已就绪：可以创建多个连接，并分别选择通道与 Agent。",
+    "devPathsReset": "已将 AgentLink 程序路径修正为开发态默认（target/release/agentlink）。"
   },
   "status": {
     "configured": "已配置",
@@ -221,20 +225,20 @@
     "weixinHelp": "扫码并在手机上确认后会自动保存 token、account_id 和 api_base。之后请先从微信给机器人发一条消息，用于缓存 context_token。",
     "feishuHelp": "扫码完成后会自动写入 app_id/app_secret。推荐 connection_mode=websocket。",
     "qqHelp": "请在 QQ 网关（如 NapCat）侧完成扫码登录，再回到这里填写 ws_url 并启动 Bridge。",
-    "dingtalkHelp": "请先在下方填写 Client ID 与 Client Secret，再扫码。首次使用需在钉钉开放平台「安全设置」登记回调 http://127.0.0.1:48188/dingtalk/oauth/callback。Robot Code 可留空。",
-    "wecomHelp": "请先在下方填写 Corp ID、Corp Secret 与 Agent ID，再扫码校验。需在应用「网页授权」中允许 127.0.0.1，本地回调为 http://127.0.0.1:48189/wecom/oauth/callback。",
+    "dingtalkHelp": "无需事先填写密钥。用钉钉 App 扫描二维码，在页面点击「一键创建新机器人」；成功后会自动写入 Client ID 与 Client Secret。Robot Code 可留空。",
+    "wecomHelp": "无需事先填写密钥。用企业微信扫描二维码，在手机上确认创建智能机器人；成功后会自动写入 Bot ID 与 Secret（WebSocket 模式）。",
     "genericHelp": "下方链接用于打开平台或网关配置页面，请按页面说明完成剩余步骤。"
   },
   "channels": {
     "feishu": { "label": "飞书", "kind": "扫码/密钥", "summary": "推荐使用 WebSocket 长连接，不依赖公网回调地址。" },
     "lark": { "label": "Lark", "kind": "扫码/密钥", "summary": "飞书国际版，字段和飞书基本一致。" },
-    "dingtalk": { "label": "钉钉", "kind": "扫码/密钥", "summary": "创建 Stream 机器人应用，填写 Client ID 与 Client Secret 后扫码授权。" },
+    "dingtalk": { "label": "钉钉", "kind": "扫码/密钥", "summary": "直接扫码绑定，自动写入 Client ID 与 Client Secret；也可在高级选项手动填写。" },
     "telegram": { "label": "Telegram", "kind": "Bot Token", "summary": "BotFather 创建机器人后填写 token。" },
     "slack": { "label": "Slack", "kind": "Socket Mode", "summary": "需要 bot token 和 app-level token。" },
     "discord": { "label": "Discord", "kind": "Bot Token", "summary": "Gateway 模式，填写 Bot Token。" },
     "qq": { "label": "QQ 个人号", "kind": "扫码网关", "summary": "通过 NapCat/LLOneBot 等 OneBot v11 网关在网关侧扫码登录。" },
     "weixin": { "label": "微信个人号", "kind": "ilink 扫码", "summary": "通过 ilink 兼容网关扫码获取 token；成功后先从微信发一条消息缓存 context_token。" },
-    "wecom": { "label": "企业微信", "kind": "扫码/密钥", "summary": "创建自建应用并填写 corp_id、corp_secret、agent_id 后扫码校验授权。" },
+    "wecom": { "label": "企业微信", "kind": "扫码/密钥", "summary": "直接扫码创建智能机器人，自动写入 Bot ID 与 Secret；Webhook 自建应用请在高级选项手动填写。" },
     "line": { "label": "LINE", "kind": "Webhook", "summary": "Messaging API webhook，需要 channel secret 和 access token。" },
     "max": { "label": "MAX", "kind": "Bot Token", "summary": "Bot API，支持 long polling 或 webhook。" },
     "qqbot": { "label": "QQBot", "kind": "Gateway", "summary": "官方 Bot Gateway，可使用 app_id/app_secret 或 token。" },

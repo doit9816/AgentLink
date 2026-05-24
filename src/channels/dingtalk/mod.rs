@@ -1,4 +1,5 @@
 mod config;
+mod stream;
 mod webhook;
 
 use crate::core::{MessageHandler, Platform, ReplyContext};
@@ -12,6 +13,13 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 
 pub use config::DingTalkPlatformConfig;
 use webhook::{dingtalk_health, dingtalk_webhook, normalize_path, preprocess_markdown};
+
+fn uses_stream(config: &DingTalkPlatformConfig) -> bool {
+    !matches!(
+        config.connection_mode.trim().to_ascii_lowercase().as_str(),
+        "webhook" | "http"
+    )
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DingTalkOutboundRecord {
@@ -36,6 +44,7 @@ pub struct DingTalkPlatform {
     pub(crate) out_rx: Arc<Mutex<mpsc::UnboundedReceiver<DingTalkOutboundRecord>>>,
     pub(crate) local_addr: Arc<Mutex<Option<SocketAddr>>>,
     pub(crate) shutdown: Arc<Mutex<Option<oneshot::Sender<()>>>>,
+    pub(crate) stream_shutdown: Arc<Mutex<Option<oneshot::Sender<()>>>>,
     pub(crate) client: reqwest::Client,
 }
 
@@ -72,6 +81,7 @@ impl DingTalkPlatform {
             out_rx: Arc::new(Mutex::new(out_rx)),
             local_addr: Arc::new(Mutex::new(None)),
             shutdown: Arc::new(Mutex::new(None)),
+            stream_shutdown: Arc::new(Mutex::new(None)),
             client: reqwest::Client::new(),
         })
     }
@@ -93,6 +103,7 @@ impl DingTalkPlatform {
             out_rx: Arc::clone(&self.out_rx),
             local_addr: Arc::clone(&self.local_addr),
             shutdown: Arc::clone(&self.shutdown),
+            stream_shutdown: Arc::clone(&self.stream_shutdown),
             client: self.client.clone(),
         }
     }
@@ -106,6 +117,19 @@ impl Platform for DingTalkPlatform {
 
     async fn start(&self, handler: MessageHandler) -> Result<()> {
         *self.handler.lock().await = Some(handler);
+        if uses_stream(&self.config) {
+            let (shutdown_tx, shutdown_rx) = oneshot::channel();
+            *self.stream_shutdown.lock().await = Some(shutdown_tx);
+            let platform = Arc::new(self.clone_for_server());
+            tokio::spawn(async move {
+                stream::run(platform, shutdown_rx).await;
+            });
+            tracing::info!(
+                mode = %self.config.connection_mode,
+                "dingtalk platform started (stream mode)"
+            );
+            return Ok(());
+        }
         let listener = tokio::net::TcpListener::bind(&self.config.listen).await?;
         let addr = listener.local_addr()?;
         *self.local_addr.lock().await = Some(addr);
@@ -125,7 +149,7 @@ impl Platform for DingTalkPlatform {
                 })
                 .await;
         });
-        tracing::info!(addr = %addr, path = %self.config.callback_path, "dingtalk platform started");
+        tracing::info!(addr = %addr, path = %self.config.callback_path, "dingtalk platform started (webhook mode)");
         Ok(())
     }
 
@@ -168,6 +192,9 @@ impl Platform for DingTalkPlatform {
     }
 
     async fn stop(&self) -> Result<()> {
+        if let Some(tx) = self.stream_shutdown.lock().await.take() {
+            let _ = tx.send(());
+        }
         if let Some(tx) = self.shutdown.lock().await.take() {
             let _ = tx.send(());
         }

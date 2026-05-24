@@ -2,24 +2,24 @@ data_dir = "/Users/chenhongshun/rust/AgentLink/examples/data"
 
 [[projects]]
 name = "demo"
-default_platforms = ["lark"]
+default_platforms = ["weixin"]
 
 [projects.agent]
-type = "codex"
+type = "cursor"
 
 [projects.agent.options]
 work_dir = "/Users/chenhongshun/rust/AgentLink"
-backend = "exec"
+command = "agent"
 mode = "suggest"
-codex_bin = "codex"
 
 [[projects.platforms]]
-id = "lark"
-type = "lark"
+id = "weixin"
+type = "weixin"
 
 [projects.platforms.options]
-name = "lark"
-api_base = "https://open.larksuite.com"
-callback_path = "/feishu/webhook"
-connection_mode = "websocket"
-listen = "127.0.0.1:18200"
+name = "weixin"
+account_id = "bf2abc616867@im.bot"
+allow_from = "o9cq804zNidzH6UlKDXMU5jBJRl0@im.wechat"
+api_base = "https://ilinkai.weixin.qq.com"
+bot_type = "3"
+token = "bf2abc616867@im.bot:060000e10a6ff65f9e4bfb96cd2e89f04bdcf3"

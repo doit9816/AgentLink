@@ -63,6 +63,7 @@ async fn line_webhook_text_round_trip_e2e() {
 async fn wecom_webhook_text_round_trip_e2e() {
     let platform = WeComPlatform::new(WeComPlatformConfig {
         name: "wecom".to_string(),
+        connection_mode: "webhook".to_string(),
         listen: "127.0.0.1:0".to_string(),
         callback_path: "/wecom/callback".to_string(),
         dry_run: true,
@@ -96,6 +97,7 @@ async fn wecom_encrypted_xml_round_trip_e2e() {
     let aes_key = wecom_test_aes_key();
     let platform = WeComPlatform::new(WeComPlatformConfig {
         name: "wecom".to_string(),
+        connection_mode: "webhook".to_string(),
         listen: "127.0.0.1:0".to_string(),
         callback_path: "/wecom/callback".to_string(),
         corp_id: Some("corp-test".to_string()),

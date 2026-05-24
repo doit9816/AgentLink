@@ -327,6 +327,7 @@ fn test_feishu_event_frame() -> Vec<u8> {
 async fn dingtalk_webhook_text_round_trip_e2e() {
     let platform = DingTalkPlatform::new(DingTalkPlatformConfig {
         name: "dingtalk".to_string(),
+        connection_mode: "webhook".to_string(),
         listen: "127.0.0.1:0".to_string(),
         callback_path: "/dingtalk/webhook".to_string(),
         dry_run: true,
