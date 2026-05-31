@@ -228,7 +228,7 @@ const AGENTS = [
   { id: "opencode", label: "OpenCode", kind: "CLI", command: "opencode" },
   { id: "iflow", label: "iFlow CLI", kind: "CLI", command: "iflow" },
   { id: "devin", label: "Devin", kind: "CLI/ACP", command: "devin" },
-  { id: "acp", label: "ACP", kind: "协议入口", command: "acp-agent" },
+  { id: "acp", label: "ACP", kind: "协议入口", command: "agent", summary: "ACP JSON-RPC stdio；默认 agent + args「acp」。" },
   { id: "mock", label: "Mock", kind: "测试", command: "" }
 ];
 
@@ -261,7 +261,9 @@ const SELECT_HELP = {
   codexBackend: "exec 是调用 Codex CLI；app-server 预留给 Codex app-server 协议。",
   codexMode: "控制 Codex 的默认执行策略。suggest 最保守，full-auto/yolo 更自动化。",
   agentModel: "留空时使用该 Agent 自己的默认模型。",
-  agentArgs: "额外命令行参数。每行一个，便于后续传入模型、模式或自定义开关。"
+  agentArgs: "额外命令行参数。每行一个，便于后续传入模型、模式或自定义开关。",
+  acpArgs: "ACP 子命令参数。Cursor 等通常填 acp（即运行 agent acp）。",
+  acpAuthMethod: "可选：initialize 之后调用的 authenticate methodId，例如 cursor_login。"
 };
 
 const CURRENT_OS = (() => {
@@ -357,7 +359,9 @@ function initialAgentFields() {
       agent.id,
       agent.id === "codex"
         ? { backend: "exec", mode: "suggest", command: "codex", model: "", reasoningEffort: "", args: "" }
-        : { command: agent.command ?? agent.id, model: "", mode: "", args: "" }
+        : agent.id === "acp"
+          ? { command: agent.command ?? "agent", model: "", mode: "", args: "acp", authMethod: "" }
+          : { command: agent.command ?? agent.id, model: "", mode: "", args: "" }
     ])
   );
 }
@@ -2432,6 +2436,25 @@ listen("update-download-event", (event) => {
                 <label>{{ t('agent.reasoningEffort') }}<input v-model="currentAgentFields.reasoningEffort" :placeholder="t('agent.reasoningPlaceholder')" /></label>
               </div>
               <label><span class="label-row">{{ t('agent.extraArgs') }} <span class="help-dot" :title="SELECT_HELP.agentArgs">?</span></span><textarea v-model="currentAgentFields.args"></textarea></label>
+            </details>
+          </div>
+
+          <div v-else-if="connection.selectedAgent === 'acp'" class="field-stack">
+            <label>{{ t('agent.command') }}<input v-model="currentAgentFields.command" placeholder="agent" /></label>
+            <label>
+              <span class="label-row">{{ t('agent.args') }} <span class="help-dot" :title="SELECT_HELP.acpArgs">?</span></span>
+              <textarea v-model="currentAgentFields.args" placeholder="acp" />
+            </label>
+            <details class="advanced-box">
+              <summary>{{ t('common.advancedOptions') }}</summary>
+              <label>
+                <span class="label-row">{{ t('agent.acpAuthMethod') }} <span class="help-dot" :title="SELECT_HELP.acpAuthMethod">?</span></span>
+                <input v-model="currentAgentFields.authMethod" :placeholder="t('agent.acpAuthMethodPlaceholder')" />
+              </label>
+              <label>
+                <span class="label-row">{{ t('agent.modeField') }} <span class="help-dot" :title="SELECT_HELP.agentModel">?</span></span>
+                <input v-model="currentAgentFields.mode" :placeholder="t('agent.acpModePlaceholder')" />
+              </label>
             </details>
           </div>
 

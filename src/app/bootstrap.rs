@@ -1,3 +1,4 @@
+use crate::agents::acp::AcpAgent;
 use crate::agents::cli_agent::CliAgent;
 use crate::agents::codex::CodexAgent;
 use crate::app::config::{Config, PlatformConfig};
@@ -28,6 +29,9 @@ pub fn default_registry() -> Registry {
     registry.register_agent("codex", |opts| {
         Ok(Arc::new(CodexAgent::new_from_options(opts)))
     });
+    registry.register_agent("acp", |opts| {
+        Ok(Arc::new(AcpAgent::new_from_options(opts)?))
+    });
     for name in [
         "cli",
         "claudecode",
@@ -46,7 +50,6 @@ pub fn default_registry() -> Registry {
         "iflow-cli",
         "pi",
         "devin",
-        "acp",
     ] {
         registry.register_agent(name, move |opts| {
             Ok(Arc::new(CliAgent::new_from_options(name, opts)))
@@ -161,7 +164,14 @@ pub async fn run(
         let store_path = PathBuf::from(&config.data_dir).join(format!("{}.sqlite3", project.name));
         let store = SessionStore::open(store_path)?;
         let agent_kind = project.agent.kind.clone();
-        let engine = Engine::new(project.name.clone(), agent, platforms, store);
+        let work_dir = project
+            .agent
+            .options
+            .get("work_dir")
+            .and_then(|value| value.as_str())
+            .unwrap_or(".")
+            .to_string();
+        let engine = Engine::new(project.name.clone(), work_dir, agent, platforms, store);
         engine.start().await?;
         let platform_names = selected
             .iter()

@@ -17,6 +17,7 @@ async fn http_platform_receives_webhook_and_captures_final_reply() {
     });
     let engine = Engine::new(
         "test",
+        ".",
         Arc::new(MockAgent::new()),
         vec![Arc::clone(&platform) as Arc<dyn Platform>],
         SessionStore::in_memory().unwrap(),
@@ -77,6 +78,7 @@ async fn http_platform_accepts_rich_message_attachments() {
     });
     let engine = Engine::new(
         "test",
+        ".",
         Arc::new(MockAgent::new()),
         vec![Arc::clone(&platform) as Arc<dyn Platform>],
         SessionStore::in_memory().unwrap(),
@@ -129,6 +131,7 @@ async fn http_platform_optional_bearer_token_protects_webhook() {
     });
     let engine = Engine::new(
         "test",
+        ".",
         Arc::new(MockAgent::new()),
         vec![Arc::clone(&platform) as Arc<dyn Platform>],
         SessionStore::in_memory().unwrap(),

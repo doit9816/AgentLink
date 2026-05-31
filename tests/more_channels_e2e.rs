@@ -547,6 +547,7 @@ async fn weibo_ws_expect_token(
 async fn start_engine(name: &str, platform: Arc<dyn Platform>) -> Arc<Engine> {
     let engine = Engine::new(
         name,
+        ".",
         Arc::new(MockAgent::new()),
         vec![platform],
         SessionStore::in_memory().unwrap(),

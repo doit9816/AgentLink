@@ -1,7 +1,7 @@
 use crate::core::{
     Agent, AgentCapabilities, AgentSession, AgentSessionInfo, Event, FileAttachment,
     ImageAttachment, Message, MessageHandler, PermissionBehavior, PermissionResult, Platform,
-    ReplyContext,
+    ReplyContext, SessionStartRequest,
 };
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
@@ -37,8 +37,8 @@ impl Agent for MockAgent {
         }
     }
 
-    async fn start_session(&self, session_id: Option<String>) -> Result<Arc<dyn AgentSession>> {
-        let id = session_id.unwrap_or_else(|| {
+    async fn start_session(&self, request: SessionStartRequest) -> Result<Arc<dyn AgentSession>> {
+        let id = request.resume_session_id.unwrap_or_else(|| {
             format!(
                 "mock-session-{}",
                 self.counter.fetch_add(1, Ordering::SeqCst) + 1

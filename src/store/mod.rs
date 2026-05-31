@@ -7,7 +7,9 @@ use rusqlite::Connection;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-pub use models::{ApprovalRecord, SessionRecord, TargetRecord};
+pub use models::{
+    ApprovalRecord, ConversationPrefs, ConversationSlot, SessionRecord, TargetRecord,
+};
 pub use time::unix_now;
 
 #[derive(Clone)]

@@ -46,7 +46,7 @@ AgentLink 是一个**高性能 Rust 桥接服务**，无缝连接聊天渠道与
 - 🔧 优化的图标配置，完美支持所有平台
 
 ### 🔒 生产级特性
-- **会话管理**: SQLite 持久化会话存储
+- **会话管理**: SQLite 持久化；聊天内 `/new`、`/list`、`/switch`、`/current`、`/dir`（与 cc-connect 一致）
 - **审批工作流**: 内置 `/allow` 和 `/deny` 命令
 - **富媒体**: 图片、文件、音频、视频、位置、卡片
 - **安全性**: Token 认证、签名校验
@@ -211,7 +211,7 @@ flowchart LR
 v1 已完成：
 
 - 多编程 Agent 架构，Codex 是第一个真实 Agent。
-- Agent 注册矩阵：`codex`、`mock`，以及通用 CLI 适配的 `claudecode`、`claude-code`、`cursor`、`gemini`、`kimi`、`qoder`、`opencode`、`iflow`、`pi`、`devin`、`acp`。
+- Agent 注册矩阵：`codex`、`mock`、`acp`（ACP JSON-RPC stdio 长连），以及通用 CLI 适配的 `claudecode`、`claude-code`、`cursor`、`gemini`、`kimi`、`qoder`、`opencode`、`iflow`、`pi`、`devin`。
 - `Platform / Agent / AgentSession / Engine / SessionStore` 分层。
 - 内置 `MockPlatform + MockAgent`，保证 e2e 不依赖真实 IM。
 - `BridgePlatform`：WebSocket 外部适配器接入。
@@ -232,6 +232,20 @@ v1 已完成：
 - SQLite 会话和审批存储。
 - 同一会话普通消息串行处理，审批命令旁路处理。
 - 文字审批协议：`/allow <approval_id>`、`/deny <approval_id>`。
+- 会话管理命令（每个聊天 `session_key` 独立）：
+
+```text
+/new [名称]     创建新 Agent 会话并切换为当前
+/list           列出已保存会话（* 为当前）
+/switch <id>    切换到指定编号
+/current        查看当前会话与工作目录
+/dir            查看工作目录与历史
+/dir <路径>     设置工作目录（支持 ~/ 与相对路径）
+/dir reset      恢复配置中的 work_dir
+/dir -          返回上一个目录
+/cd <路径>      同 /dir <路径>
+```
+
 - 默认只发送最终结果，不做流式消息编辑。
 - 统一富媒体消息结构：图片、文件、音频、视频、位置、卡片、贴纸、raw 事件先在 HTTP/Bridge/Engine/Codex 主链路打通。
 - Tauri 桌面客户端骨架，可做 setup、校验配置、启动/停止 AgentLink、发送 HTTP 测试消息。
@@ -497,7 +511,7 @@ timeout_mins = 30
 examples/agentlink.agents.toml
 ```
 
-当前边界：Claude Code、Gemini、OpenCode、Kimi、Qoder、iFlow、Cursor、Pi 这类已经能通过 CLI 命令接入；Devin/ACP 也有注册入口和配置形态，但完整 ACP JSON-RPC 会话协议还没有深度实现，当前作为命令/stdio 适配入口使用。
+当前边界：Claude Code、Gemini、OpenCode、Kimi、Qoder、iFlow、Cursor、Pi、Devin 等通过通用 CLI 适配接入；`type = "acp"` 使用 ACP JSON-RPC（`initialize` → 可选 `authenticate` → `session/new` 或 `session/load` → `session/prompt`，`session/update` 流式文本/工具/计划与 `session/request_permission` 审批）。需在配置中指定 `command`（如 `agent`）与 `args`（如 `["acp"]`）。可选：`auth_method`（如 `cursor_login`）、`mode`（握手后 `session/set_mode`）、`display_name`、`env`。若 Agent 支持 `session/list`，Bridge 可通过 `list_sessions` 枚举历史会话以便恢复。
 
 ## Codex 后端
 

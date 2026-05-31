@@ -5,7 +5,7 @@ mod exec_output;
 mod exec_prompt;
 mod shared;
 
-use crate::core::{Agent, AgentCapabilities, AgentSession, AgentSessionInfo};
+use crate::core::{Agent, AgentCapabilities, AgentSession, AgentSessionInfo, SessionStartRequest};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use std::collections::BTreeMap;
@@ -88,15 +88,17 @@ impl Agent for CodexAgent {
         }
     }
 
-    async fn start_session(&self, session_id: Option<String>) -> Result<Arc<dyn AgentSession>> {
-        match self.backend.as_str() {
+    async fn start_session(&self, request: SessionStartRequest) -> Result<Arc<dyn AgentSession>> {
+        let mut agent = self.clone();
+        if let Some(dir) = request.work_dir {
+            agent.work_dir = dir;
+        }
+        let resume_id = request.resume_session_id;
+        match agent.backend.as_str() {
             "app-server" => Ok(Arc::new(
-                app_server::CodexAppServerSession::start(self.clone(), session_id).await?,
+                app_server::CodexAppServerSession::start(agent.clone(), resume_id).await?,
             )),
-            "exec" => Ok(Arc::new(exec::CodexExecSession::new(
-                self.clone(),
-                session_id,
-            ))),
+            "exec" => Ok(Arc::new(exec::CodexExecSession::new(agent, resume_id))),
             other => Err(anyhow!(
                 "unsupported codex backend `{other}`, expected `exec` or `app-server`"
             )),

@@ -1,5 +1,5 @@
 use super::Engine;
-use crate::core::{AgentSession, Message, Platform};
+use crate::core::{AgentSession, Message, Platform, SessionStartRequest};
 use crate::store::{unix_now, TargetRecord};
 use anyhow::Result;
 use std::sync::Arc;
@@ -42,7 +42,7 @@ impl Engine {
         platform: &str,
         session_key: &str,
     ) -> Result<Arc<dyn AgentSession>> {
-        let key = format!("{platform}:{session_key}");
+        let key = self.runtime_session_key(platform, session_key);
         if let Some(session) = self.sessions.lock().await.get(&key) {
             if session.alive() {
                 tracing::info!(
@@ -56,25 +56,59 @@ impl Engine {
                 return Ok(Arc::clone(session));
             }
         }
-        let resume_id = self
-            .store
-            .get_session(&self.project, platform, session_key)?
-            .map(|r| r.agent_session_id);
+        self.ensure_conversation_slots(platform, session_key)?;
+        let active_slot =
+            self.store
+                .get_active_conversation_slot(&self.project, platform, session_key)?;
+        let resume_id = active_slot
+            .as_ref()
+            .and_then(|slot| {
+                if slot.agent_session_id.is_empty() {
+                    None
+                } else {
+                    Some(slot.agent_session_id.clone())
+                }
+            })
+            .or_else(|| {
+                self.store
+                    .get_session(&self.project, platform, session_key)
+                    .ok()
+                    .flatten()
+                    .map(|r| r.agent_session_id)
+            });
+        let work_dir = self.effective_work_dir(platform, session_key)?;
         tracing::info!(
             project = %self.project,
             platform = %platform,
             session_key = %session_key,
             agent = %self.agent.name(),
             resume_agent_session_id = %resume_id.as_deref().unwrap_or(""),
+            work_dir = %work_dir,
             "agent session start requested"
         );
-        let session = self.agent.start_session(resume_id).await?;
+        let session = self
+            .agent
+            .start_session(SessionStartRequest {
+                resume_session_id: resume_id.clone(),
+                work_dir: Some(work_dir),
+            })
+            .await?;
+        let agent_session_id = session.current_session_id();
+        if let Some(slot) = active_slot {
+            self.store.update_conversation_slot_agent_id(
+                &self.project,
+                platform,
+                session_key,
+                &slot.slot_id,
+                &agent_session_id,
+            )?;
+        }
         tracing::info!(
             project = %self.project,
             platform = %platform,
             session_key = %session_key,
             agent = %self.agent.name(),
-            agent_session_id = %session.current_session_id(),
+            agent_session_id = %agent_session_id,
             "agent session started"
         );
         self.sessions.lock().await.insert(key, Arc::clone(&session));
@@ -90,13 +124,27 @@ impl Engine {
         result_content: String,
         fallback: String,
     ) -> Result<()> {
+        let agent_session_id = session.current_session_id();
         self.store.upsert_session(
             &self.project,
             platform_name,
             &message.session_key,
             self.agent.name(),
-            &session.current_session_id(),
+            &agent_session_id,
         )?;
+        if let Ok(Some(slot)) = self.store.get_active_conversation_slot(
+            &self.project,
+            platform_name,
+            &message.session_key,
+        ) {
+            let _ = self.store.update_conversation_slot_agent_id(
+                &self.project,
+                platform_name,
+                &message.session_key,
+                &slot.slot_id,
+                &agent_session_id,
+            );
+        }
         let final_text = if result_content.trim().is_empty() {
             fallback.trim().to_string()
         } else {

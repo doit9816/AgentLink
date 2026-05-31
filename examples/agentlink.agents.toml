@@ -71,10 +71,9 @@ default_platforms = ["mock"]
 type = "acp"
 
 [projects.agent.options]
-work_dir = "D:/go/src/cmsCloud"
+work_dir = "."
 command = "agent"
 args = ["acp"]
-prompt_stdin = true
 display_name = "Cursor ACP"
 
 [[projects.platforms]]

@@ -152,6 +152,9 @@
     "command": "command",
     "modeField": "mode",
     "args": "args",
+    "acpAuthMethod": "auth_method",
+    "acpAuthMethodPlaceholder": "可为空，如 cursor_login",
+    "acpModePlaceholder": "ACP modeId，握手后 session/set_mode",
     "linkHint": "当前 Agent 与当前通道联动；启动 Bridge 后，入站消息会进入该 Agent 并回写到通道。",
     "linkHintNamed": "当前运行会使用 {agent} 处理来自 {channel} 的消息。",
     "moreAgents": "更多 Agent",
@@ -258,7 +261,7 @@
     "opencode": { "label": "OpenCode", "kind": "CLI", "summary": "通过 CLI 命令接入。" },
     "iflow": { "label": "iFlow CLI", "kind": "CLI", "summary": "通过 CLI 命令接入。" },
     "devin": { "label": "Devin", "kind": "CLI/ACP", "summary": "通过 CLI 命令接入。" },
-    "acp": { "label": "ACP", "kind": "协议入口", "summary": "通过 CLI 命令接入。" },
+    "acp": { "label": "ACP", "kind": "协议入口", "summary": "通过 ACP JSON-RPC（stdio）长连子进程；需配置 command 与 args。" },
     "mock": { "label": "Mock", "kind": "测试", "summary": "内置测试 Agent。" }
   },
   "update": {

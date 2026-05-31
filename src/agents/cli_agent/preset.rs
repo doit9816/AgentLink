@@ -62,12 +62,6 @@ impl CliPreset {
                 prompt_stdin: true,
                 append_prompt: false,
             },
-            "acp" => Self {
-                command: "acp-agent",
-                args: &[],
-                prompt_stdin: true,
-                append_prompt: false,
-            },
             _ => Self {
                 command: "agent",
                 args: &[],

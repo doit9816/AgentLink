@@ -2174,12 +2174,29 @@ fn render_config(app: &AppHandle, options: &ClientOptions) -> Result<String, Str
                 .or(options.agent_model.as_deref()),
         );
         push_optional(&mut out, "mode", Some(agent_mode));
-        let args = lines(
+        let mut args = lines(
             agent_fields
                 .get("args")
                 .map(|value| value.as_str())
                 .unwrap_or_else(|| options.agent_args.as_deref().unwrap_or_default()),
         );
+        if args.is_empty() {
+            args.extend(
+                default_agent_args(agent_type)
+                    .iter()
+                    .map(|arg| (*arg).to_string()),
+            );
+        }
+        if agent_type == "acp" {
+            push_optional(
+                &mut out,
+                "auth_method",
+                agent_fields
+                    .get("authMethod")
+                    .map(|value| value.as_str())
+                    .filter(|value| !value.is_empty()),
+            );
+        }
         if !args.is_empty() {
             out.push_str("args = [");
             out.push_str(
@@ -2330,6 +2347,7 @@ fn agent_option_key(agent_type: &str, key: &str) -> String {
     match (agent_type, key) {
         ("codex", "codex_bin") => "command".to_string(),
         ("codex", "reasoning_effort") => "reasoningEffort".to_string(),
+        (_, "auth_method") => "authMethod".to_string(),
         (_, "work_dir") => "workDir".to_string(),
         _ => key.to_string(),
     }
@@ -3964,8 +3982,15 @@ fn default_agent_command(agent_type: &str) -> &str {
         "opencode" => "opencode",
         "iflow" => "iflow",
         "devin" => "devin",
-        "acp" => "acp-agent",
+        "acp" => "agent",
         _ => "",
+    }
+}
+
+fn default_agent_args(agent_type: &str) -> &'static [&'static str] {
+    match agent_type {
+        "acp" => &["acp"],
+        _ => &[],
     }
 }
 
@@ -5520,6 +5545,18 @@ mod discovered_receive_tests {
         let (ty, id, _) = discovered_receive_fields("wecom", reply_ctx, "user1");
         assert_eq!(ty, "chat_id");
         assert_eq!(id, "CHAT1");
+    }
+}
+
+#[cfg(test)]
+mod agent_defaults_tests {
+    use super::*;
+
+    #[test]
+    fn acp_default_command_and_args() {
+        assert_eq!(default_agent_command("acp"), "agent");
+        assert_eq!(default_agent_args("acp"), &["acp"]);
+        assert!(default_agent_args("codex").is_empty());
     }
 }
 

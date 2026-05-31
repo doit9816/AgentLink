@@ -4,7 +4,7 @@ mod preset;
 
 use crate::core::{
     Agent, AgentCapabilities, AgentSession, AgentSessionInfo, Event, FileAttachment,
-    ImageAttachment, PermissionResult,
+    ImageAttachment, PermissionResult, SessionStartRequest,
 };
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
@@ -30,8 +30,15 @@ impl Agent for CliAgent {
         }
     }
 
-    async fn start_session(&self, session_id: Option<String>) -> Result<Arc<dyn AgentSession>> {
-        Ok(Arc::new(CliAgentSession::new(self.clone(), session_id)))
+    async fn start_session(&self, request: SessionStartRequest) -> Result<Arc<dyn AgentSession>> {
+        let mut agent = self.clone();
+        if let Some(dir) = request.work_dir {
+            agent.work_dir = dir;
+        }
+        Ok(Arc::new(CliAgentSession::new(
+            agent,
+            request.resume_session_id,
+        )))
     }
 
     async fn list_sessions(&self) -> Result<Vec<AgentSessionInfo>> {

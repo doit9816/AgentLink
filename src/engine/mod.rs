@@ -1,6 +1,9 @@
 mod runtime;
 
-use crate::core::{parse_approval_command, Agent, AgentSession, Message, MessageHandler, Platform};
+use crate::core::{
+    parse_approval_command, parse_session_command, Agent, AgentSession, Message, MessageHandler,
+    Platform,
+};
 use crate::store::SessionStore;
 use anyhow::Result;
 use std::collections::HashMap;
@@ -10,6 +13,7 @@ use tokio::time::Duration;
 
 pub struct Engine {
     project: String,
+    default_work_dir: String,
     agent: Arc<dyn Agent>,
     platforms: Vec<Arc<dyn Platform>>,
     store: SessionStore,
@@ -26,12 +30,14 @@ struct ApprovalRuntime {
 impl Engine {
     pub fn new(
         project: impl Into<String>,
+        default_work_dir: impl Into<String>,
         agent: Arc<dyn Agent>,
         platforms: Vec<Arc<dyn Platform>>,
         store: SessionStore,
     ) -> Arc<Self> {
         Arc::new(Self {
             project: project.into(),
+            default_work_dir: default_work_dir.into(),
             agent,
             platforms,
             store,
@@ -87,6 +93,7 @@ impl Engine {
     pub fn with_turn_timeout(self: Arc<Self>, turn_timeout: Duration) -> Arc<Self> {
         Arc::new(Self {
             project: self.project.clone(),
+            default_work_dir: self.default_work_dir.clone(),
             agent: Arc::clone(&self.agent),
             platforms: self.platforms.clone(),
             store: self.store.clone(),
@@ -123,6 +130,11 @@ impl Engine {
                 .handle_approval_command(platform, message, command.approval_id, command.decision)
                 .await;
         }
+        if let Some(command) = parse_session_command(&message.content) {
+            return self
+                .handle_session_command(platform, message, command)
+                .await;
+        }
         if message.content.trim().is_empty()
             && message.images.is_empty()
             && message.files.is_empty()
@@ -140,5 +152,59 @@ impl Engine {
             .await;
         let _guard = queue.lock().await;
         self.process_user_message(platform, message).await
+    }
+
+    pub(crate) fn ensure_conversation_slots(
+        &self,
+        platform: &str,
+        session_key: &str,
+    ) -> anyhow::Result<()> {
+        use crate::store::ConversationSlot;
+        let slots = self
+            .store
+            .list_conversation_slots(&self.project, platform, session_key)?;
+        if !slots.is_empty() {
+            return Ok(());
+        }
+        if let Some(legacy) = self
+            .store
+            .get_session(&self.project, platform, session_key)?
+        {
+            let now = crate::store::unix_now();
+            let slot = ConversationSlot {
+                project: self.project.clone(),
+                platform: platform.to_string(),
+                session_key: session_key.to_string(),
+                slot_id: "1".to_string(),
+                label: String::new(),
+                agent_session_id: legacy.agent_session_id,
+                is_active: true,
+                created_at: now,
+                updated_at: now,
+            };
+            self.store.insert_conversation_slot(&slot)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn effective_work_dir(&self, platform: &str, session_key: &str) -> anyhow::Result<String> {
+        let prefs = self
+            .store
+            .get_conversation_prefs(&self.project, platform, session_key)?;
+        if let Some(dir) = prefs.work_dir_override {
+            return Ok(dir);
+        }
+        Ok(self.default_work_dir.clone())
+    }
+
+    pub(crate) fn runtime_session_key(&self, platform: &str, session_key: &str) -> String {
+        format!("{platform}:{session_key}")
+    }
+
+    pub(crate) async fn drop_runtime_session(&self, platform: &str, session_key: &str) {
+        let key = self.runtime_session_key(platform, session_key);
+        if let Some(session) = self.sessions.lock().await.remove(&key) {
+            let _ = session.close().await;
+        }
     }
 }

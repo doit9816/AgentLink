@@ -20,6 +20,7 @@ async fn bridge_websocket_adapter_round_trip_e2e() {
     });
     let engine = Engine::new(
         "test",
+        ".",
         Arc::new(MockAgent::new()),
         vec![Arc::clone(&platform) as Arc<dyn Platform>],
         SessionStore::in_memory().unwrap(),
@@ -84,6 +85,7 @@ async fn bridge_websocket_rejects_missing_token() {
     });
     let engine = Engine::new(
         "test",
+        ".",
         Arc::new(MockAgent::new()),
         vec![Arc::clone(&platform) as Arc<dyn Platform>],
         SessionStore::in_memory().unwrap(),

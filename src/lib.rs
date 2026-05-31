@@ -8,6 +8,7 @@ pub mod store;
 pub mod testing;
 pub mod util;
 
+pub use agents::acp;
 pub use agents::cli_agent;
 pub use agents::codex;
 pub use app::config;

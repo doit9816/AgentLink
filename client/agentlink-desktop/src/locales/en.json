@@ -152,6 +152,9 @@
     "command": "command",
     "modeField": "mode",
     "args": "args",
+    "acpAuthMethod": "auth_method",
+    "acpAuthMethodPlaceholder": "optional, e.g. cursor_login",
+    "acpModePlaceholder": "ACP modeId; applied via session/set_mode",
     "linkHint": "This agent pairs with the selected channel; inbound messages route here when Bridge runs.",
     "linkHintNamed": "{agent} will handle messages from {channel} when Bridge runs.",
     "moreAgents": "More agents",
@@ -258,7 +261,7 @@
     "opencode": { "label": "OpenCode", "kind": "CLI", "summary": "CLI integration." },
     "iflow": { "label": "iFlow CLI", "kind": "CLI", "summary": "CLI integration." },
     "devin": { "label": "Devin", "kind": "CLI/ACP", "summary": "CLI integration." },
-    "acp": { "label": "ACP", "kind": "Protocol", "summary": "CLI integration." },
+    "acp": { "label": "ACP", "kind": "Protocol", "summary": "ACP JSON-RPC over stdio; set command and args." },
     "mock": { "label": "Mock", "kind": "Test", "summary": "Built-in test agent." }
   },
   "update": {

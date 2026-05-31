@@ -1,9 +1,27 @@
-﻿use agentlink::codex::extract_completed_agent_message;
-use agentlink::core::{parse_approval_command, PermissionBehavior};
+use agentlink::acp::AcpAgent;
+use agentlink::codex::extract_completed_agent_message;
+use agentlink::core::{
+    parse_approval_command, parse_session_command, PermissionBehavior, SessionCommand,
+};
 use agentlink::mock::MockAgent;
 use agentlink::{Registry, SessionStore};
 use serde_json::json;
 use std::sync::Arc;
+
+#[test]
+fn parse_session_management_commands() {
+    assert_eq!(
+        parse_session_command("/new"),
+        Some(SessionCommand::New { label: None })
+    );
+    assert_eq!(parse_session_command("/list"), Some(SessionCommand::List));
+    assert_eq!(
+        parse_session_command("/switch 2"),
+        Some(SessionCommand::Switch {
+            slot_id: "2".to_string()
+        })
+    );
+}
 
 #[test]
 fn parse_approval_commands() {
@@ -16,6 +34,22 @@ fn parse_approval_commands() {
     assert_eq!(deny.approval_id, "apv_2");
 
     assert!(parse_approval_command("/allow").is_none());
+}
+
+#[test]
+fn registry_creates_acp_agent() {
+    let mut registry = Registry::new();
+    registry.register_agent("acp", |opts| {
+        Ok(std::sync::Arc::new(AcpAgent::new_from_options(opts)?))
+    });
+    let mut opts = toml::value::Table::new();
+    opts.insert(
+        "command".to_string(),
+        toml::Value::String("agent".to_string()),
+    );
+    let agent = registry.create_agent("acp", opts).expect("acp agent");
+    assert_eq!(agent.name(), "acp");
+    assert!(agent.capabilities().approvals);
 }
 
 #[test]

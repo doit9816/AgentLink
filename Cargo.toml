@@ -29,3 +29,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
 [dev-dependencies]
 tempfile = "3"
+
+[[bin]]
+name = "acp-mock-agent"
+path = "tests/bin/acp-mock-agent.rs"
+test = false

@@ -56,6 +56,7 @@ async fn feishu_webhook_text_round_trip_e2e() {
     });
     let engine = Engine::new(
         "test",
+        ".",
         Arc::new(MockAgent::new()),
         vec![Arc::clone(&platform) as Arc<dyn Platform>],
         SessionStore::in_memory().unwrap(),
@@ -112,6 +113,7 @@ async fn feishu_url_verification_returns_challenge() {
     });
     let engine = Engine::new(
         "test",
+        ".",
         Arc::new(MockAgent::new()),
         vec![Arc::clone(&platform) as Arc<dyn Platform>],
         SessionStore::in_memory().unwrap(),
@@ -148,6 +150,7 @@ async fn feishu_webhook_verification_token_rejects_invalid_request() {
     });
     let engine = Engine::new(
         "test",
+        ".",
         Arc::new(MockAgent::new()),
         vec![Arc::clone(&platform) as Arc<dyn Platform>],
         SessionStore::in_memory().unwrap(),
@@ -229,6 +232,7 @@ async fn feishu_websocket_text_round_trip_e2e() {
     });
     let engine = Engine::new(
         "test",
+        ".",
         Arc::new(MockAgent::new()),
         vec![Arc::clone(&platform) as Arc<dyn Platform>],
         SessionStore::in_memory().unwrap(),
@@ -335,6 +339,7 @@ async fn dingtalk_webhook_text_round_trip_e2e() {
     });
     let engine = Engine::new(
         "test",
+        ".",
         Arc::new(MockAgent::new()),
         vec![Arc::clone(&platform) as Arc<dyn Platform>],
         SessionStore::in_memory().unwrap(),

@@ -10,6 +10,7 @@ async fn test_engine() -> (Arc<Engine>, Arc<MockPlatform>, SessionStore) {
     let platform = MockPlatform::new("mock");
     let engine = Engine::new(
         "test",
+        ".",
         agent,
         vec![Arc::clone(&platform) as Arc<dyn agentlink::core::Platform>],
         store.clone(),

@@ -1,6 +1,7 @@
 use super::events::Event;
 use super::messages::{FileAttachment, ImageAttachment, Message};
 use super::models::{AgentCapabilities, AgentSessionInfo, PermissionResult, ReplyContext};
+use super::session_start::SessionStartRequest;
 use anyhow::Result;
 use async_trait::async_trait;
 use std::future::Future;
@@ -24,7 +25,7 @@ pub trait Platform: Send + Sync {
 pub trait Agent: Send + Sync {
     fn name(&self) -> &str;
     fn capabilities(&self) -> AgentCapabilities;
-    async fn start_session(&self, session_id: Option<String>) -> Result<Arc<dyn AgentSession>>;
+    async fn start_session(&self, request: SessionStartRequest) -> Result<Arc<dyn AgentSession>>;
     async fn list_sessions(&self) -> Result<Vec<AgentSessionInfo>>;
     async fn stop(&self) -> Result<()>;
 }

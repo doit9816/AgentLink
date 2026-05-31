@@ -63,6 +63,7 @@ async fn telegram_long_poll_text_round_trip_e2e() {
     });
     let engine = Engine::new(
         "test",
+        ".",
         Arc::new(MockAgent::new()),
         vec![Arc::clone(&platform) as Arc<dyn Platform>],
         SessionStore::in_memory().unwrap(),
@@ -116,6 +117,7 @@ async fn slack_socket_mode_text_round_trip_e2e() {
     });
     let engine = Engine::new(
         "test",
+        ".",
         Arc::new(MockAgent::new()),
         vec![Arc::clone(&platform) as Arc<dyn Platform>],
         SessionStore::in_memory().unwrap(),
@@ -179,6 +181,7 @@ async fn discord_gateway_text_round_trip_e2e() {
     });
     let engine = Engine::new(
         "test",
+        ".",
         Arc::new(MockAgent::new()),
         vec![Arc::clone(&platform) as Arc<dyn Platform>],
         SessionStore::in_memory().unwrap(),
@@ -206,6 +209,7 @@ async fn qq_onebot_websocket_text_round_trip_e2e() {
     });
     let engine = Engine::new(
         "test",
+        ".",
         Arc::new(MockAgent::new()),
         vec![Arc::clone(&platform) as Arc<dyn Platform>],
         SessionStore::in_memory().unwrap(),

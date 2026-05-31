@@ -1,6 +1,7 @@
 mod approval;
 mod prompt;
 mod session;
+mod session_commands;
 
 use super::{ApprovalRuntime, Engine};
 use crate::core::{EventType, Message, Platform};
@@ -36,24 +37,43 @@ impl Engine {
             files = message.files.len(),
             "agent prompt send start"
         );
-        session
-            .send(prompt, message.images.clone(), message.files.clone())
-            .await?;
-        tracing::info!(
-            project = %self.project,
-            platform = %platform_name,
-            session_key = %message.session_key,
-            agent = %self.agent.name(),
-            agent_session_id = %session.current_session_id(),
-            "agent prompt sent"
-        );
-
+        let mut send_fut =
+            Box::pin(session.send(prompt, message.images.clone(), message.files.clone()));
+        let mut send_done = false;
         let mut fallback = String::new();
         loop {
-            let event = timeout(self.turn_timeout, session.recv_event())
-                .await
-                .map_err(|_| anyhow!("agent turn timed out"))?
-                .ok_or_else(|| anyhow!("agent session event stream closed"))?;
+            let event = timeout(self.turn_timeout, async {
+                loop {
+                    tokio::select! {
+                        res = &mut send_fut, if !send_done => {
+                            res?;
+                            send_done = true;
+                            tracing::info!(
+                                project = %self.project,
+                                platform = %platform_name,
+                                session_key = %message.session_key,
+                                agent = %self.agent.name(),
+                                agent_session_id = %session.current_session_id(),
+                                "agent prompt sent"
+                            );
+                        }
+                        event = session.recv_event() => {
+                            if event.is_some() {
+                                return Ok(event);
+                            }
+                            if send_done {
+                                return Err(anyhow!("agent session event stream closed"));
+                            }
+                        }
+                    }
+                }
+            })
+            .await
+            .map_err(|_| anyhow!("agent turn timed out"))??;
+
+            let Some(event) = event else {
+                continue;
+            };
             tracing::info!(
                 project = %self.project,
                 platform = %platform_name,

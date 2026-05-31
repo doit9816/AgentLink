@@ -22,6 +22,28 @@ pub struct ApprovalRecord {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConversationSlot {
+    pub project: String,
+    pub platform: String,
+    pub session_key: String,
+    pub slot_id: String,
+    pub label: String,
+    pub agent_session_id: String,
+    pub is_active: bool,
+    pub created_at: u64,
+    pub updated_at: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConversationPrefs {
+    pub project: String,
+    pub platform: String,
+    pub session_key: String,
+    pub work_dir_override: Option<String>,
+    pub work_dir_history: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TargetRecord {
     pub project: String,
     pub platform: String,
